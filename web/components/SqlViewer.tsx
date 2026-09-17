@@ -78,7 +78,7 @@ export function SqlViewer({ status }: { status: PipelineStatus | null }) {
             id="sql-select"
             value={key}
             onChange={(e) => setKey(e.target.value)}
-            className="h-8 rounded-md border border-line bg-canvas px-2 text-sm"
+            className="h-9 rounded-lg border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none"
           >
             {QUERIES.map((q) => (
               <option key={q.key} value={q.key}>
@@ -89,14 +89,14 @@ export function SqlViewer({ status }: { status: PipelineStatus | null }) {
           <button
             onClick={copy}
             disabled={!sql}
-            className="h-8 rounded-md border border-line px-3 text-xs font-medium text-ink-2 disabled:opacity-40"
+            className="h-9 rounded-lg border border-line-strong px-3 text-xs font-semibold text-ink-2 transition-colors hover:bg-surface-2 disabled:opacity-40"
           >
             {copied ? "Copied" : "Copy"}
           </button>
         </div>
       }
     >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line px-5 py-2.5 text-xs text-ink-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-line bg-surface-2 px-5 py-2.5 text-xs text-ink-3">
         <span>{selected?.note}</span>
         {meta?.generated_at && (
           <span>
@@ -107,13 +107,17 @@ export function SqlViewer({ status }: { status: PipelineStatus | null }) {
       </div>
 
       {error ? (
-        <ErrorNote message={error} onRetry={() => void load(key)} />
+        <div className="p-5">
+          <ErrorNote message={error} onRetry={() => void load(key)} />
+        </div>
       ) : sql === null ? (
         <Skeleton rows={6} />
       ) : (
-        <pre className="max-h-[28rem] overflow-auto px-5 py-4 text-xs leading-relaxed">
-          <code className="font-mono whitespace-pre text-ink-2">{sql}</code>
-        </pre>
+        <div className="p-5">
+          <pre className="max-h-[28rem] overflow-auto rounded-lg border border-line bg-surface-2 px-4 py-3.5 text-xs leading-relaxed">
+            <code className="font-mono whitespace-pre text-ink">{sql}</code>
+          </pre>
+        </div>
       )}
     </Card>
   );

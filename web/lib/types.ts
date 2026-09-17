@@ -90,6 +90,17 @@ export interface PipelineStatus {
   };
 }
 
+/**
+ * The milestone NAME a headline status carries, for display.
+ *
+ * `undefined` when the status names no milestone (a data-quality headline, say), which is the
+ * signal to fall back to the generic humanised token rather than to invent a label.
+ */
+export function milestoneLabelOf(status: string | null | undefined): string | undefined {
+  const milestone = milestoneOf(String(status ?? ""));
+  return milestone ? MILESTONE_LABEL[milestone] : undefined;
+}
+
 /** The milestone a well's headline status names, or null when it is not a slippage value. */
 export function milestoneOf(status: string): Milestone | null {
   const key = (status || "").replace(/^SLIPPED\s*-\s*/i, "").trim().toUpperCase();

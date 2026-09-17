@@ -59,17 +59,17 @@ export function WellLookup({
           autoComplete="off"
           aria-invalid={touched && !valid}
           aria-describedby="well-lookup-hint"
-          className="tnum h-9 w-40 rounded-md border border-line bg-canvas px-3 text-sm outline-none placeholder:text-ink-3"
+          className="tnum h-10 w-40 rounded-lg border border-line-strong bg-surface px-3 font-mono text-[13px] outline-none placeholder:font-sans placeholder:text-ink-3"
         />
       </div>
       <button
         type="submit"
         disabled={!valid}
-        className="h-9 rounded-md bg-accent px-4 text-sm font-medium text-white disabled:opacity-40"
+        className="h-10 rounded-lg bg-accent px-4 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-strong disabled:opacity-40"
       >
         Investigate
       </button>
-      <p id="well-lookup-hint" className="basis-full text-xs text-ink-3" aria-live="polite">
+      <p id="well-lookup-hint" className="basis-full text-xs leading-snug text-ink-3" aria-live="polite">
         {touched && !valid
           ? "Enter a well ID."
           : unknown

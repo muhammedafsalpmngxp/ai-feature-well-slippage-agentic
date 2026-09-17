@@ -2,9 +2,15 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { Empty, Pill, Td, TableShell, Th } from "./ui";
+import { Empty, Pill, Status, StatusLegend, Td, TableShell, Th } from "./ui";
 import { EMPTY, formatDate, formatVariance, varianceTone } from "@/lib/format";
-import { MILESTONES, MILESTONE_LABEL, milestoneOf, type WellRow } from "@/lib/types";
+import {
+  MILESTONES,
+  MILESTONE_LABEL,
+  milestoneLabelOf,
+  milestoneOf,
+  type WellRow,
+} from "@/lib/types";
 
 type SortKey = "well_id" | "status" | "variance";
 
@@ -15,6 +21,9 @@ function headlineVariance(well: WellRow): number | null {
   const value = well[`${milestone}_variance_days`];
   return value === null || value === undefined || value === "" ? null : Number(value);
 }
+
+const FIELD =
+  "h-9 rounded-lg border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none";
 
 export function WellsTable({
   wells,
@@ -58,13 +67,22 @@ export function WellsTable({
         <label className="sr-only" htmlFor="well-search">
           Search by well ID
         </label>
-        <input
-          id="well-search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search well ID…"
-          className="h-8 w-44 rounded-md border border-line bg-canvas px-2.5 text-sm outline-none placeholder:text-ink-3"
-        />
+        <div className="relative flex items-center">
+          <span aria-hidden className="pointer-events-none absolute left-3 text-ink-3">
+            <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+              <circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M10 10L13.5 13.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            </svg>
+          </span>
+          <input
+            id="well-search"
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search well ID"
+            className={`${FIELD} w-52 pl-8 placeholder:text-ink-3`}
+          />
+        </div>
         <label className="sr-only" htmlFor="milestone-filter">
           Filter by milestone
         </label>
@@ -72,7 +90,7 @@ export function WellsTable({
           id="milestone-filter"
           value={milestone}
           onChange={(e) => setMilestone(e.target.value)}
-          className="h-8 rounded-md border border-line bg-canvas px-2 text-sm"
+          className={FIELD}
         >
           <option value="all">All milestones</option>
           {MILESTONES.map((m) => (
@@ -88,15 +106,19 @@ export function WellsTable({
           id="sort-by"
           value={sort}
           onChange={(e) => setSort(e.target.value as SortKey)}
-          className="h-8 rounded-md border border-line bg-canvas px-2 text-sm"
+          className={FIELD}
         >
           <option value="variance">Worst overrun first</option>
           <option value="well_id">Well ID</option>
           <option value="status">Milestone</option>
         </select>
-        <span className="ml-auto text-xs text-ink-3" aria-live="polite">
+        <span className="tnum ml-auto text-xs text-ink-3" aria-live="polite">
           {rows.length.toLocaleString("en-GB")} of {wells.length.toLocaleString("en-GB")} wells
         </span>
+      </div>
+
+      <div className="border-b border-line px-5 py-2.5">
+        <StatusLegend />
       </div>
 
       {rows.length === 0 ? (
@@ -129,19 +151,25 @@ export function WellsTable({
                   <Td>
                     <Link
                       href={`/wells/${encodeURIComponent(id)}`}
-                      className="tnum font-medium text-accent hover:underline"
+                      className="tnum font-mono font-medium text-accent hover:text-accent-strong hover:underline"
                     >
                       {id}
                     </Link>
                   </Td>
+                  {/* The one tinted chip on this row: the column a reader is actually scanning.
+                      Labelled with the milestone alone - the column header already says these
+                      are failures, so repeating "Slipped -" in every cell says nothing. */}
                   <Td>
-                    <Pill value={String(well.well_slippage_status ?? "")} />
+                    <Pill
+                      value={String(well.well_slippage_status ?? "")}
+                      label={milestoneLabelOf(well.well_slippage_status)}
+                    />
                   </Td>
                   <Td align="right">
                     <span
                       className={
                         varianceTone(variance) === "danger"
-                          ? "font-medium text-danger"
+                          ? "font-semibold text-danger"
                           : varianceTone(variance) === "good"
                             ? "text-good"
                             : "text-ink-3"
@@ -150,24 +178,22 @@ export function WellsTable({
                       {formatVariance(variance)}
                     </span>
                   </Td>
-                  <Td className="whitespace-nowrap text-ink-2">
-                    {formatDate(well.rig_on_deadline as string)}
-                  </Td>
+                  <Td className="text-ink-2">{formatDate(well.rig_on_deadline as string)}</Td>
                   <Td align="right">
                     {activity === undefined ? (
                       <span className="text-ink-3">{EMPTY}</span>
                     ) : (
-                      <span className="font-medium">{activity}</span>
+                      <span className="font-semibold">{activity}</span>
                     )}
                   </Td>
                   <Td>
-                    <Pill value={well.flaf_status as string} />
+                    <Status value={well.flaf_status as string} />
                   </Td>
                   <Td>
-                    <Pill value={well.pegging_status as string} />
+                    <Status value={well.pegging_status as string} />
                   </Td>
                   <Td>
-                    <Pill value={well.hookup_status as string} />
+                    <Status value={well.hookup_status as string} />
                   </Td>
                 </tr>
               );

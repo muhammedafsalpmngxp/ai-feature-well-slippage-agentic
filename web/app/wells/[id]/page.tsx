@@ -9,6 +9,8 @@ import {
   Pill,
   Skeleton,
   Stat,
+  StatStrip,
+  Status,
   TableShell,
   Td,
   Th,
@@ -19,6 +21,7 @@ import { EMPTY, cleanLabel, formatDate, formatPercent, formatVariance, varianceT
 import {
   MILESTONES,
   MILESTONE_LABEL,
+  milestoneLabelOf,
   type TaskRow,
   type WellRow,
 } from "@/lib/types";
@@ -90,16 +93,36 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
     return rows.filter((t) => t.schedule_risk === riskFilter);
   }, [tasks, riskFilter]);
 
+  const headline = String(well?.well_slippage_status ?? "");
+
   return (
     <div className="space-y-6">
-      <div>
-        <Link href="/" className="text-xs text-accent hover:underline">
-          ← All wells
+      <div className="space-y-3">
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:text-accent-strong"
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+            <path
+              d="M11.5 7H3M6.5 3.5L3 7l3.5 3.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          All wells
         </Link>
-        <div className="mt-2 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="tnum text-xl font-semibold tracking-tight">Well {wellId}</h1>
-            <p className="mt-1 text-sm text-ink-2">
+
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="display tnum text-[26px] leading-tight font-semibold">
+                Well {wellId}
+              </h1>
+              {headline && <Pill value={headline} label={milestoneLabelOf(headline)} />}
+            </div>
+            <p className="text-sm text-ink-2">
               Contractual milestones and task-level activity delay.
             </p>
           </div>
@@ -109,7 +132,7 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
 
       {error && <ErrorNote message={error} onRetry={() => void load()} />}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <StatStrip>
         <Stat
           label="Delayed activities"
           value={tasks === null ? "—" : counts.activities}
@@ -121,13 +144,19 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                 : "Distinct activity codes"
           }
         />
-        <Stat label="Red tasks" value={tasks === null ? "—" : counts.red} tone="danger"
+        {/* Tone is conditional, not fixed: a red "0" reads as an alarm for the one outcome that
+            is unambiguously good news, and a red "0d" says a task that landed exactly on its
+            deadline overran. A count only earns its colour once there is something to count. */}
+        <Stat label="Red tasks" value={tasks === null ? "—" : counts.red}
+              tone={counts.red > 0 ? "danger" : "neutral"}
               hint="End date already missed" />
-        <Stat label="Not started, late" value={tasks === null ? "—" : counts.notStarted} tone="warn"
+        <Stat label="Not started, late" value={tasks === null ? "—" : counts.notStarted}
+              tone={counts.notStarted > 0 ? "warn" : "neutral"}
               hint="Planned start has passed" />
         <Stat label="Worst overrun" value={tasks === null ? "—" : formatVariance(counts.worst)}
-              tone="danger" hint="Days past planned end" />
-      </div>
+              tone={varianceTone(counts.worst) === "danger" ? "danger" : "neutral"}
+              hint="Days past planned end" />
+      </StatStrip>
 
       <Card title="Contractual milestones" subtitle="Deadlines are derived, never stored">
         {well === undefined ? (
@@ -138,29 +167,27 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
           <TableShell>
             <thead>
               <tr>
-                <Th>Milestone</Th>
-                <Th>Deadline</Th>
+                <Th className="w-56">Milestone</Th>
+                <Th className="w-44">Deadline</Th>
                 <Th>Status</Th>
-                <Th align="right">Variance</Th>
+                <Th align="right" className="w-36">Variance</Th>
               </tr>
             </thead>
             <tbody>
               {MILESTONES.map((m) => {
                 const variance = well[`${m}_variance_days`] as number | null;
                 return (
-                  <tr key={m}>
-                    <Td className="font-medium">{MILESTONE_LABEL[m]}</Td>
-                    <Td className="whitespace-nowrap text-ink-2">
-                      {formatDate(well[`${m}_deadline`] as string)}
-                    </Td>
+                  <tr key={m} className="transition-colors hover:bg-surface-2">
+                    <Td className="font-semibold">{MILESTONE_LABEL[m]}</Td>
+                    <Td className="text-ink-2">{formatDate(well[`${m}_deadline`] as string)}</Td>
                     <Td>
-                      <Pill value={well[`${m}_status`] as string} />
+                      <Status value={well[`${m}_status`] as string} />
                     </Td>
                     <Td align="right">
                       <span
                         className={
                           varianceTone(variance) === "danger"
-                            ? "font-medium text-danger"
+                            ? "font-semibold text-danger"
                             : varianceTone(variance) === "good"
                               ? "text-good"
                               : "text-ink-3"
@@ -181,17 +208,25 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
         title="Activity delay"
         subtitle="Latest record per task · most urgent first"
         action={
-          <select
-            value={riskFilter}
-            onChange={(e) => setRiskFilter(e.target.value)}
-            aria-label="Filter by schedule risk"
-            className="h-8 rounded-md border border-line bg-canvas px-2 text-sm"
-          >
-            <option value="all">All tasks ({counts.total})</option>
-            <option value="RED">Red ({counts.red})</option>
-            <option value="AMBER">Amber ({counts.amber})</option>
-            <option value="GREEN">Green</option>
-          </select>
+          <div className="flex items-center gap-2.5">
+            <span className="tnum text-xs text-ink-3">
+              {tasks === null ? "" : `${visible.length} of ${counts.total} tasks`}
+            </span>
+            <label className="sr-only" htmlFor="risk-filter">
+              Filter by schedule risk
+            </label>
+            <select
+              id="risk-filter"
+              value={riskFilter}
+              onChange={(e) => setRiskFilter(e.target.value)}
+              className="h-9 rounded-lg border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none"
+            >
+              <option value="all">All tasks ({counts.total})</option>
+              <option value="RED">Red ({counts.red})</option>
+              <option value="AMBER">Amber ({counts.amber})</option>
+              <option value="GREEN">Green</option>
+            </select>
+          </div>
         }
       >
         {tasksFailed ? (
@@ -231,8 +266,8 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
             </thead>
             <tbody>
               {visible.map((task, i) => (
-                <tr key={`${task.task_code}-${i}`} className="hover:bg-surface-2">
-                  <Td className="max-w-[260px]">
+                <tr key={`${task.task_code}-${i}`} className="transition-colors hover:bg-surface-2">
+                  <Td className="max-w-[280px]">
                     <span className="block truncate" title={cleanLabel(task.wbs)}>
                       {task.wbs ? cleanLabel(task.wbs) : (
                         <span className="text-ink-3 italic">Unmapped</span>
@@ -250,8 +285,9 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                     </span>
                   </Td>
                   <Td>
-                    <Pill value={task.schedule_risk} />
+                    <Status value={task.schedule_risk} />
                   </Td>
+                  {/* The one tinted chip on this row. */}
                   <Td>
                     <Pill value={task.end_status} />
                   </Td>
@@ -259,7 +295,7 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                     <span
                       className={
                         varianceTone(task.end_variance_days) === "danger"
-                          ? "font-medium text-danger"
+                          ? "font-semibold text-danger"
                           : varianceTone(task.end_variance_days) === "good"
                             ? "text-good"
                             : "text-ink-3"
@@ -268,9 +304,7 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                       {formatVariance(task.end_variance_days)}
                     </span>
                   </Td>
-                  <Td className="whitespace-nowrap text-ink-2">
-                    {formatDate(task.target_end)}
-                  </Td>
+                  <Td className="text-ink-2">{formatDate(task.target_end)}</Td>
                   <Td align="right" className="text-ink-2">
                     {formatPercent(task.progress_percent)}
                   </Td>
@@ -281,7 +315,7 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
         )}
       </Card>
 
-      <p className="text-xs text-ink-3">
+      <p className="text-xs leading-relaxed text-ink-3">
         A delayed task is evidence that <em>that task</em> is slipping. It does not by itself
         establish that the task caused this well&rsquo;s milestone to slip.
       </p>

@@ -1,66 +1,116 @@
 @import "tailwindcss";
 
 /*
-  One palette, defined once, redefined for dark. Every colour below is a role - surface, border,
-  danger - not a hue, so a theme change is a change to this block and nothing else.
+  One palette, defined once as ROLES - surface, border, danger - never as hues. The light theme
+  is the base; the dark theme below re-binds the same roles, so a component never knows which
+  theme it is in and no component carries a second set of classes.
 
-  Status colours are chosen for contrast against their own tinted background rather than for
-  brightness: the red and amber here sit above 4.5:1 on their chips in both themes, because a
-  schedule-risk flag nobody can read is not a flag.
+  Grey is rationed in light: --color-surface-2 is for table header strips and row hover ONLY.
+  Anything else separating itself from the page uses a 1px --color-line border instead.
+
+  Every status colour is checked against BOTH its page background and its own tint, in BOTH
+  themes, above 4.5:1 - a schedule-risk flag nobody can read is not a flag.
 */
 @theme {
-  --color-canvas: #f7f8fa;
+  /* Ground. Page and card are the same white: cards are defined by their border, not by contrast. */
+  --color-canvas: #ffffff;
   --color-surface: #ffffff;
-  --color-surface-2: #f2f4f7;
-  --color-line: #e3e7ed;
-  --color-line-strong: #cfd6e0;
+  --color-surface-2: #fafafb;
+  --color-line: #e8eaee;
+  --color-line-strong: #d3d8e0;
+  /* Skeletons need to be visibly darker than surface-2, or a loading table looks like an empty one. */
+  --color-skeleton: #eef0f3;
 
-  --color-ink: #0f1826;
-  --color-ink-2: #46536b;
-  --color-ink-3: #75839c;
+  --color-ink: #0e1420;
+  --color-ink-2: #55606f;
+  /* 4.9:1 on white. The usual #8a94a3 for a caption grey fails at 3.4:1 - the single most common
+     contrast defect in a dashboard, and these captions carry the units and the caveats. */
+  --color-ink-3: #69727f;
 
-  --color-accent: #1d4ed8;
-  --color-accent-soft: #eef2ff;
+  /* Deep petroleum navy, not a bright UI blue: it sits under dense figures without competing
+     with the red that actually needs to be seen. */
+  --color-accent: #123b63;
+  --color-accent-strong: #0b2942;
+  --color-accent-soft: #f2f6fb;
+  /* Text ON an accent fill. A token, not `text-white`, because the accent INVERTS between themes:
+     white on the dark theme's pale blue button is 2.4:1 - unreadable. */
+  --color-on-accent: #ffffff;
 
-  --color-danger: #b42318;
-  --color-danger-soft: #fef3f2;
-  --color-warn: #b54708;
-  --color-warn-soft: #fffaeb;
-  --color-good: #027a48;
-  --color-good-soft: #ecfdf3;
-  --color-muted-soft: #f2f4f7;
+  --color-danger: #a81e12;
+  --color-danger-soft: #fcf2f1;
+  --color-warn: #8a5300;
+  --color-warn-soft: #fdf7ec;
+  --color-good: #0a6140;
+  --color-good-soft: #f0f7f3;
+  /* Pending/unknown. A grey dot, never a colour: "not due yet" is not an outcome. */
+  --color-muted: #b9bfc9;
+  --color-muted-soft: #f3f4f7;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
-  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* Three faces, each with one job: figures and headings, UI text, and identifiers.
+     The variables are set by next/font in layout.tsx; the stacks here are the fallback. */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  --font-display: var(--font-archivo), var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  @theme {
-    --color-canvas: #0b0f17;
-    --color-surface: #121824;
-    --color-surface-2: #182130;
-    --color-line: #232e40;
-    --color-line-strong: #33415a;
+/* The sweep across a loading row. A var because the light theme's bright white sweep is a strobe
+   on a dark ground. */
+:root {
+  --shimmer: rgb(255 255 255 / 0.65);
+}
 
-    --color-ink: #eef2f8;
-    --color-ink-2: #a9b6cc;
-    --color-ink-3: #7787a1;
+/*
+  ── Dark theme ──────────────────────────────────────────────────────────────────
 
-    --color-accent: #7aa2ff;
-    --color-accent-soft: #17233c;
+  DESIGNED, NOT INVERTED. A mechanical flip of the light theme fails in three specific ways, and
+  each is fixed deliberately below:
 
-    --color-danger: #ff9086;
-    --color-danger-soft: #2a1512;
-    --color-warn: #fdb022;
-    --color-warn-soft: #2a1e0b;
-    --color-good: #4ade80;
-    --color-good-soft: #0d2318;
-    --color-muted-soft: #1b2434;
-  }
+  1. In light, page and card are both white and the border alone separates them. Inverted, that
+     leaves a flat black field. Here `surface` is LIFTED above `canvas` instead: in dark, elevation
+     reads as lightness, which is the opposite of the light theme's logic.
+  2. The accent inverts from a deep navy to a pale blue, because #123b63 is invisible on black.
+     That flips which colour is legible on top of it - hence --color-on-accent.
+  3. Pure black and pure white are both avoided. #000 makes hairlines vanish; #fff on a dark
+     ground halates and blurs small text. The extremes here are #0c1016 and #e8edf5.
+
+  This block is unlayered, so it wins over Tailwind's @theme regardless of specificity.
+  `data-theme` is set on <html> by the blocking script in layout.tsx before first paint.
+*/
+:root[data-theme="dark"] {
+  --color-canvas: #0c1016;
+  --color-surface: #12171f;
+  --color-surface-2: #1a212b;
+  --color-line: #232c38;
+  --color-line-strong: #333e4d;
+  --color-skeleton: #1c242f;
+
+  --color-ink: #e8edf5;
+  --color-ink-2: #a3afc0;
+  --color-ink-3: #7d8a9c;
+
+  --color-accent: #84abe8;
+  --color-accent-strong: #a6c4f2;
+  --color-accent-soft: #16263c;
+  --color-on-accent: #0c1016;
+
+  --color-danger: #f58a7e;
+  --color-danger-soft: #2b1512;
+  --color-warn: #f2b45c;
+  --color-warn-soft: #2b2010;
+  --color-good: #5fd39b;
+  --color-good-soft: #0e2a1e;
+  --color-muted: #5a6779;
+  --color-muted-soft: #1c242f;
+
+  --shimmer: rgb(255 255 255 / 0.06);
+
+  /* Native controls - selects, scrollbars, the date picker - follow this, not our CSS. Without
+     it the dropdowns stay white and the theme is only half applied. */
+  color-scheme: dark;
 }
 
 html {
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
 body {
@@ -68,7 +118,14 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04";
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Headings and the big figures. Archivo is tighter and squarer than the body face, which is what
+   makes a 30px number read as data rather than as prose. */
+.display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
 }
 
 /* Tabular figures everywhere a number sits in a column. Without this, proportional digits make
@@ -76,6 +133,16 @@ body {
 .tnum {
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
+}
+
+/* The uppercase micro-label used for every stat and column heading. Defined once because the
+   tracking is the whole trick: uppercase at 11px without it is a smear. */
+.eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
 }
 
 /* A visible focus ring, always. Removing it is the single most common accessibility regression
@@ -86,19 +153,16 @@ body {
   border-radius: 4px;
 }
 
-::selection {
-  background: var(--color-accent);
-  color: #fff;
+/* On white, a field's border is the only thing that says "you can type here", so it has to
+   strengthen on focus rather than rely on the ring alone. */
+input:focus,
+select:focus {
+  border-color: var(--color-line-strong);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
+::selection {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
 }
 
 @keyframes shimmer {
@@ -110,13 +174,98 @@ body {
 .skeleton {
   position: relative;
   overflow: hidden;
-  background: var(--color-surface-2);
+  background: var(--color-skeleton);
 }
 .skeleton::after {
   content: "";
   position: absolute;
   inset: 0;
   transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.12), transparent);
+  background: linear-gradient(90deg, transparent, var(--shimmer), transparent);
   animation: shimmer 1.6s infinite;
+}
+
+/*
+  ── Theme switching ─────────────────────────────────────────────────────────────
+
+  Two mechanisms, because the good one is not everywhere yet.
+
+  1. View Transitions (Chromium): the new theme is revealed under a circle growing from the
+     button, animated in ThemeToggle.tsx. The default cross-fade is cancelled here so only that
+     clip-path runs, and the new snapshot is stacked OVER the old one - otherwise the circle
+     wipes to nothing, since both layers would be painted in the wrong order.
+
+  2. Everywhere else: `.theme-anim` is added to <html> for the length of the swap and removed
+     again, so colours cross-fade. It is scoped to the properties that actually change; a blanket
+     `transition: all` here would also animate every layout property mid-swap.
+*/
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 1;
+}
+::view-transition-new(root) {
+  z-index: 2;
+}
+
+.theme-anim,
+.theme-anim *,
+.theme-anim *::before,
+.theme-anim *::after {
+  transition:
+    background-color 280ms ease,
+    border-color 280ms ease,
+    color 280ms ease,
+    fill 280ms ease,
+    stroke 280ms ease;
+}
+
+/* The toggle's sun/moon pair. Declared AFTER `.theme-anim` deliberately: that rule sets
+   `transition` on every descendant, and at equal specificity the later rule wins - written above
+   this one, it would strip the transform transition and the icons would jump instead of turn. */
+.theme-icon {
+  position: absolute;
+  inset: 0;
+  height: 1rem;
+  width: 1rem;
+  transition:
+    transform 500ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 320ms ease;
+}
+.theme-icon-sun {
+  transform: rotate(0deg) scale(1);
+  opacity: 1;
+}
+.theme-icon-moon {
+  transform: rotate(90deg) scale(0.4);
+  opacity: 0;
+}
+:root[data-theme="dark"] .theme-icon-sun {
+  transform: rotate(-90deg) scale(0.4);
+  opacity: 0;
+}
+:root[data-theme="dark"] .theme-icon-moon {
+  transform: rotate(0deg) scale(1);
+  opacity: 1;
+}
+
+/* Last, so it overrides the animation rules above rather than being overridden by them. A theme
+   switch under reduced motion is instant: the swap still happens, the sweep does not. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }
