@@ -55,12 +55,20 @@ class Settings:
     openai_fast_model: str = field(default_factory=lambda: _get("OPENAI_FAST_MODEL"))
     llm_timeout: int = field(default_factory=lambda: _get_int("LLM_TIMEOUT", 180))
     llm_max_retries: int = field(default_factory=lambda: _get_int("LLM_MAX_RETRIES", 2))
-    # Reasoning models often accept only their default temperature. When true, main-tier calls
-    # omit it up front rather than paying a rejected call plus a silent retry every time.
+    # Reasoning models often accept only their default temperature. When true, calls omit it up
+    # front rather than paying a rejected call plus a silent retry every time. Default false so
+    # the per-agent temperatures in llm.py actually take effect; llm.chat() drops it and retries
+    # once if the model turns out to reject it, so a wrong setting costs one call, not a run.
     reasoning_ignores_temperature: bool = field(
-        default_factory=lambda: _get("OPENAI_IGNORES_TEMPERATURE", "true").lower()
+        default_factory=lambda: _get("OPENAI_IGNORES_TEMPERATURE", "false").lower()
         in ("1", "true", "yes")
     )
+    # GLOBAL overrides for the per-agent reasoning settings in llm.py. Blank means "use each
+    # agent's own value", the same convention as a blank API key disabling a feature: setting
+    # nothing changes nothing. Set one of these to force every agent to the same value, which is
+    # useful for measuring what the tuning is actually buying.
+    reasoning_effort: str = field(default_factory=lambda: _get("OPENAI_REASONING_EFFORT"))
+    reasoning_verbosity: str = field(default_factory=lambda: _get("OPENAI_VERBOSITY"))
 
     # ── Introspection scope ─────────────────────────────────────────────────────
     # The slippage domain spans the well tables, the two activity lookups in dbo, and the
@@ -108,6 +116,10 @@ class Settings:
     verify_retries: int = field(default_factory=lambda: _get_int("VERIFY_RETRIES", 1))
 
     log_level: str = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
+    # Shared log file, so a run can be followed from a terminal other than the one that started
+    # it - which is the only way to watch a run triggered from the dashboard, since that one is
+    # a subprocess of the API. Set LOG_FILE= (empty) to disable and log to the console only.
+    log_file: str = field(default_factory=lambda: _get("LOG_FILE", "logs/pipeline.log"))
 
 
 settings = Settings()

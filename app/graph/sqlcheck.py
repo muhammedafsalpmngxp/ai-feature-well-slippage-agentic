@@ -111,13 +111,16 @@ def check_rules(sql: str) -> list[str]:
     return concerns
 
 
-def check_contract(columns: list[str]) -> list[str]:
-    """Compare the returned columns against the output contract, in BOTH directions.
+def check_contract(columns: list[str], expected: list[str] | None = None) -> list[str]:
+    """Compare the returned columns against a query's output contract, in BOTH directions.
 
     Checked both ways on purpose: a missing column and an unexpected one each mean something
     moved. Only a name check - it says nothing about whether the values are right.
+
+    `expected` defaults to the well-slippage contract so older callers keep working, but every
+    caller in the graph passes the contract of the query actually being run.
     """
-    expected = scenarios.expected_columns()
+    expected = expected if expected is not None else scenarios.expected_columns()
     got = [str(c) for c in (columns or [])]
     lower_expected = {c.lower() for c in expected}
     lower_got = {c.lower() for c in got}
@@ -132,12 +135,17 @@ def check_contract(columns: list[str]) -> list[str]:
     return errors
 
 
-def findings(sql: str, schema: str, columns: list[str] | None = None) -> list[str]:
+def findings(
+    sql: str,
+    schema: str,
+    columns: list[str] | None = None,
+    expected: list[str] | None = None,
+) -> list[str]:
     """Every deterministic finding, for the Verifier to adjudicate."""
     try:
         out = check_sql(sql, schema) + check_rules(sql)
         if columns is not None:
-            out += check_contract(columns)
+            out += check_contract(columns, expected)
         return list(dict.fromkeys(out))  # de-duplicate, keep order
     except Exception as exc:  # noqa: BLE001 - an advisory signal must never break a run
         log.warning("sqlcheck: skipped (%s)", exc)

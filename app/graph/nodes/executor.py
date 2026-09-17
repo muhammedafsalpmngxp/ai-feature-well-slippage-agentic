@@ -9,6 +9,7 @@ import time
 
 from app.config import settings
 from app.db.connection import get_connection
+from app.graph import queries
 from app.graph.state import SlippageState
 from app.observability import get_logger
 
@@ -17,13 +18,18 @@ log = get_logger()
 
 def executor_node(state: SlippageState) -> dict:
     sql = state.get("sql", "")
+    spec = queries.QUERIES_BY_KEY.get(state.get("current_query", ""))
+    # A per-well query filters on a bound parameter rather than an inlined id, so the same
+    # verified SQL can later be run for any well without going back through the agents. The
+    # value is never concatenated into the statement, so it cannot alter it.
+    params = [state.get("target_well_id", "")] if (spec and spec.needs_well_id) else []
     conn = None
     start = time.perf_counter()
 
     try:
         conn = get_connection()
         cur = conn.cursor()
-        cur.execute(sql)
+        cur.execute(sql, *params) if params else cur.execute(sql)
 
         if cur.description is None:
             # A statement that returns no result set is not a listing. Treated as an execution
@@ -38,8 +44,9 @@ def executor_node(state: SlippageState) -> dict:
         elapsed = time.perf_counter() - start
 
         log.info(
-            "exec: %d rows%s x %d cols in %.2fs",
+            "exec: %d rows%s x %d cols in %.2fs%s",
             len(rows), " (capped)" if truncated else "", len(columns), elapsed,
+            " [well " + str(params[0]) + "]" if params else "",
         )
         return {
             "columns": columns,

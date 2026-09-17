@@ -1,6 +1,14 @@
+# Agent pipeline (main.py)
 langgraph
 langchain-core
 langchain-openai
 openai
 pyodbc
 python-dotenv
+
+# API layer (api/main.py) — serves the verified SQL to the dashboard.
+# These are NOT optional if you want the frontend: uvicorn is the server `main.py`'s README
+# tells you to start, and omitting them here is why a fresh venv fails with
+# "No module named uvicorn".
+fastapi
+uvicorn[standard]

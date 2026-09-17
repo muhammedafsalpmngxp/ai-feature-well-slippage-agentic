@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/*
+  One palette, defined once, redefined for dark. Every colour below is a role - surface, border,
+  danger - not a hue, so a theme change is a change to this block and nothing else.
+
+  Status colours are chosen for contrast against their own tinted background rather than for
+  brightness: the red and amber here sit above 4.5:1 on their chips in both themes, because a
+  schedule-risk flag nobody can read is not a flag.
+*/
+@theme {
+  --color-canvas: #f7f8fa;
+  --color-surface: #ffffff;
+  --color-surface-2: #f2f4f7;
+  --color-line: #e3e7ed;
+  --color-line-strong: #cfd6e0;
+
+  --color-ink: #0f1826;
+  --color-ink-2: #46536b;
+  --color-ink-3: #75839c;
+
+  --color-accent: #1d4ed8;
+  --color-accent-soft: #eef2ff;
+
+  --color-danger: #b42318;
+  --color-danger-soft: #fef3f2;
+  --color-warn: #b54708;
+  --color-warn-soft: #fffaeb;
+  --color-good: #027a48;
+  --color-good-soft: #ecfdf3;
+  --color-muted-soft: #f2f4f7;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-canvas: #0b0f17;
+    --color-surface: #121824;
+    --color-surface-2: #182130;
+    --color-line: #232e40;
+    --color-line-strong: #33415a;
+
+    --color-ink: #eef2f8;
+    --color-ink-2: #a9b6cc;
+    --color-ink-3: #7787a1;
+
+    --color-accent: #7aa2ff;
+    --color-accent-soft: #17233c;
+
+    --color-danger: #ff9086;
+    --color-danger-soft: #2a1512;
+    --color-warn: #fdb022;
+    --color-warn-soft: #2a1e0b;
+    --color-good: #4ade80;
+    --color-good-soft: #0d2318;
+    --color-muted-soft: #1b2434;
+  }
+}
+
+html {
+  color-scheme: light dark;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04";
+}
+
+/* Tabular figures everywhere a number sits in a column. Without this, proportional digits make
+   a column of variances impossible to scan - the decimal points do not line up. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* A visible focus ring, always. Removing it is the single most common accessibility regression
+   in a dashboard, and keyboard users are exactly who scans tables like these. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-2);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.12), transparent);
+  animation: shimmer 1.6s infinite;
+}

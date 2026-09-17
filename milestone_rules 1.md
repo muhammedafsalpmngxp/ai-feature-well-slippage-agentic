@@ -197,11 +197,26 @@ action date, and where two share an action date, the later-created record wins. 
 this multiplies every task and corrupts every count and every variance downstream — and it
 does so silently, because the query still succeeds.
 
-### 5.2 Placeholder dates mean "not set"
+### 5.2 "Has not happened" must be absent before any comparison
 
-Actual start and actual end use a placeholder date to mean "has not happened". Treat it as
-absent before any comparison. Left alone it reads as a real date far in the past, which
-makes every task look completed decades early.
+Whatever the data uses to mean "has not happened" must read as ABSENT before any date
+comparison. There are two conventions in the wild and they need opposite handling:
+
+- **NULL** — already absent. Nothing to convert.
+- **A placeholder date**, typically far in the past. This must be converted to absent first.
+  Left alone it reads as a real date, which makes every unstarted task look completed
+  decades early.
+
+**Which one applies is a property of the data, not a rule — confirm it against the database
+before writing any comparison, and never assume a cutoff.** Inventing one is worse than
+either convention: a query that treats every date on or before some guessed year as "not
+happened" silently discards real early work, and nothing in the result says so.
+
+> **This database uses NULL.** Verified against `well.task_daily`: the lowest recorded
+> `actual_start` and `actual_end` are ordinary dates (2021-12-27), and "has not happened" is
+> recorded as NULL — 4,686 rows for `actual_start`, 26,444 for `actual_end`. There is no
+> sentinel value here, so there is nothing to normalise. Do NOT write a placeholder cutoff
+> against this database. Re-confirm if the source system changes.
 
 ### 5.3 Start verdict
 
@@ -298,6 +313,61 @@ Order the task list so the most urgent is first: red risk before amber before gr
 the largest end overrun, then the largest start overrun, then the earliest planned end.
 The reader works from the top, so this ordering is part of the answer, not presentation.
 
+### 5.11 The activity delay query
+
+Everything in §5 so far describes the arithmetic for ONE task. This section states what the
+second query IS, because milestone slippage and activity delay are different questions and
+must not be answered by one query.
+
+**The two queries, and why they are separate.**
+
+| | asks | grain | built from |
+|---|---|---|---|
+| Well slippage | which WELLS missed a contractual milestone | one row per well | §1–§4 |
+| Activity delay | which WORK is running late, and whose | one row per task | §5 |
+
+A well can be on milestone track while its tasks slip, and the reverse. Neither query
+substitutes for the other, and a delayed task is NOT evidence that the well is late — see
+`slippage.md` on keeping the two layers separate.
+
+**The chain, in order. Every step is mandatory.**
+
+1. **Start from the task code.** It identifies the task and is also the source of the
+   activity grouping. Trim it; stored values carry padding.
+2. **Reduce to the latest record.** The task table is a history (§5.1), so take the latest
+   record per task by its action date, and where two share an action date, the later-created
+   record wins. **Do this FIRST**, before reading any date. Every column below is read from
+   that one reduced record — never from the raw table. Skipping this multiplies every task
+   and corrupts every variance downstream, silently, because the query still succeeds.
+3. **Read the four dates off that record** — planned start, planned end, actual start,
+   actual end. The two actual dates use a placeholder for "has not happened" (§5.2); convert
+   it to absent BEFORE any comparison, or the task reads as completed decades early.
+4. **Derive the verdicts** from those four dates: start verdict (§5.3), end verdict (§5.4),
+   execution state (§5.5), schedule risk (§5.6). Report the two variances in whole days from
+   the planned date, positive late and negative early, and absent — never zero — where there
+   is no planned date to measure from (§3).
+5. **Resolve the task to its activity and WBS.** Two hops, both lookups, neither optional.
+   The activity id is the leading part of the task code, before its first separator; guard
+   that the separator exists, or a code without one yields a wrong activity rather than none.
+   Then activity id → activity code → WBS description and crew code. The full chain, its
+   type traps and its Old/New pitfall are in `business_rules.md` §3 — follow it exactly, and
+   never guess a WBS or use the activity id as one.
+
+**What the WBS is for.** Without it the answer can only quote a task code, which means
+nothing to a reader. The WBS description and the crew code are what turn "task FLME1180-30356
+is 17 days overdue" into a sentence an engineer can act on.
+
+**Population.** The same filter as the slippage query: only wells still in progress. The two
+queries must describe the same fleet, or their counts cannot be compared.
+
+**Grain.** One row per task, so a well with 90 tasks contributes 90 rows. That repetition is
+expected and is not a grain fault — but it means a per-WELL figure must never be computed by
+counting these rows (`business_rules.md` §3 has the worked example: one real well returns 90
+task rows for its 21 WBS).
+
+**A repeating activity is correct.** One well runs the same activity many times. Never
+de-duplicate it away; pick the grain the question asks for.
+
 ---
 
 # PART 2 — WHERE THE VALUES COME FROM
@@ -352,8 +422,8 @@ set, never from the raw table.
 |---|---|---|
 | `target_start` | `date` | Planned start. The start verdict compares the actual against it. |
 | `target_end` | `date` | Planned end. The end verdict and the red risk flag both key off it. |
-| `actual_start` | `date` | When work actually began. **Uses a placeholder date for "not started"** — convert to absent before comparing, or the task reads as started decades ago. |
-| `actual_end` | `date` | When work actually finished. Same placeholder problem. Drives the end verdict and whether the task counts as complete. |
+| `actual_start` | `date` | When work actually began. **"Not started" is recorded as NULL here — there is no placeholder date** (verified; see §5.2). Nothing to normalise, and a guessed cutoff would discard real early work. |
+| `actual_end` | `date` | When work actually finished. Same: NULL means not finished. Drives the end verdict and whether the task counts as complete — prefer it over the `completed` flag, which is a separate signal that can disagree. |
 
 ### Crew — who was on the task
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from app.graph import queries
 from app.graph.nodes.planner import render_plan
 from app.graph.prompts import sql_author_system
 from app.graph.state import SlippageState
@@ -29,14 +30,46 @@ def normalize_sql(sql: str) -> str:
     return _WS.sub(" ", (sql or "")).strip().rstrip(";").strip().lower()
 
 
+def _target_well_block(spec, state: SlippageState) -> str:
+    """The scoping instruction for a query that covers one well.
+
+    ⚠ THE WELL ID IS DELIBERATELY NOT INCLUDED.
+
+    An earlier version of this block opened with "TARGET WELL: 35543" and said "filter to it".
+    That reads as an instruction to write the id into the SQL, and it contradicted the spec's
+    own guidance to bind a parameter - so the author inlined the literal on every attempt,
+    three runs in a row, and each one was then rejected. The prompt was arguing with itself.
+
+    Withholding the value removes the contradiction: there is no id to inline, so the only way
+    to express the filter is the marker. The value is bound at execution (see executor_node),
+    which is also what lets the API re-run this same verified SQL for any well.
+    """
+    if not spec.needs_well_id:
+        return ""
+    return (
+        "SCOPE: ONE WELL, SUPPLIED AT EXECUTION TIME.\n"
+        "You are NOT told which well, and you do not need to know: the value is bound to a "
+        "parameter when the query runs. Write the filter as a comparison against a single `?` "
+        "marker - exactly one, nowhere else in the statement.\n"
+        "Convert BOTH sides explicitly, e.g. "
+        "CONVERT(varchar(50), <task well column>) = CONVERT(varchar(50), ?). The well key is "
+        "typed differently on the well record and the task record, so an implicit conversion "
+        "fails outright on a non-numeric id such as '0000F'.\n"
+        "Writing any well id as a literal is a defect: it produces a query that runs perfectly "
+        "and answers about the wrong well for the rest of its life."
+    )
+
+
 def sql_author_node(state: SlippageState) -> dict:
+    spec = queries.QUERIES_BY_KEY[state["current_query"]]
     parts = [
         "DETECTED DATABASE (the ONLY tables and columns that exist - never use others):",
         state.get("grounding", ""),
         "",
         render_plan(state),
         "",
-        "Write the slippage listing query now.",
+        _target_well_block(spec, state),
+        "Write the " + spec.label + " query now.",
     ]
 
     if state.get("plan_notes"):
@@ -84,8 +117,13 @@ def sql_author_node(state: SlippageState) -> dict:
             "Each new attempt must be materially different from the previous ones."
         )
 
-    sql = extract_sql(chat(sql_author_system(), "\n".join(p for p in parts if p), temperature=0.0))
-    log.info("sql: attempt %d written (%d chars)", state.get("retry_count", 0) + 1, len(sql))
+    sql = extract_sql(
+        chat(sql_author_system(spec), "\n".join(p for p in parts if p), agent="sql_author")
+    )
+    log.info(
+        "sql[%s]: attempt %d written (%d chars)",
+        spec.key, state.get("retry_count", 0) + 1, len(sql),
+    )
 
     # `verify_feedback` is deliberately NOT cleared here. It is the Verifier's semantic
     # instruction and stays valid until the Verifier next rules on the rewrite. Clearing it now

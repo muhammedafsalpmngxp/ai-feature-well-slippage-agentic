@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 
+from app.graph import queries
 from app.graph.state import SlippageState
 from app.observability import get_logger
 
@@ -141,6 +142,15 @@ def unknown_tables(sql: str, schema_text: str) -> list[str]:
     return sorted(referenced - valid)
 
 
+def count_parameters(sql: str) -> int:
+    """Parameter markers in the statement, ignoring any `?` inside a literal or comment.
+
+    Counted on the scrubbed copy for exactly that reason: a question mark in a string, say
+    `LIKE '%?%'`, is data and must not read as a placeholder.
+    """
+    return scrub(sql).count("?")
+
+
 def validator_node(state: SlippageState) -> dict:
     sql = state.get("sql", "")
 
@@ -157,6 +167,23 @@ def validator_node(state: SlippageState) -> dict:
         )
         log.warning("validate: rejected - %s", reason)
         return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
+
+    # A per-well query must bind its well, not inline it. Checked HERE rather than left to the
+    # database: an inlined id executes perfectly and answers about whichever well the pipeline
+    # happened to target, so the API could never re-run it for another one. Letting pyodbc catch
+    # the mismatch instead costs a full retry cycle and reports it as an opaque driver error.
+    spec = queries.QUERIES_BY_KEY.get(state.get("current_query", ""))
+    if spec and spec.needs_well_id:
+        markers = count_parameters(sql)
+        if markers != 1:
+            reason = (
+                "This query must filter its well with EXACTLY ONE `?` parameter marker; found "
+                + str(markers) + ". Do not write the well id as a literal and do not use "
+                "DECLARE. Compare against `?` directly, e.g. "
+                "CONVERT(varchar(50), <task well column>) = CONVERT(varchar(50), ?)."
+            )
+            log.warning("validate: rejected - %s", reason)
+            return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
 
     log.info("validate: ok - single read-only SELECT")
     return {"validation_error": ""}

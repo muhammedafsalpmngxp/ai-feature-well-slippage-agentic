@@ -12,9 +12,9 @@ enforced here without asking.
 from __future__ import annotations
 
 from app.config import settings
-from app.graph import sqlcheck
+from app.graph import queries, sqlcheck
 from app.graph.nodes.planner import render_plan
-from app.graph.prompts import VERIFIER_SYSTEM
+from app.graph.prompts import verifier_system
 from app.graph.state import SlippageState
 from app.llm import chat
 from app.observability import get_logger
@@ -103,11 +103,13 @@ def verifier_node(state: SlippageState) -> dict:
     rows = state.get("rows", [])
     sql = state.get("sql", "")
     schema = state.get("schema", "")
+    spec = queries.QUERIES_BY_KEY[state["current_query"]]
+    expected = list(spec.contract)
 
     # -- Deterministic first. A contract mismatch needs no LLM opinion. -------------
-    contract_errors = sqlcheck.check_contract(columns)
+    contract_errors = sqlcheck.check_contract(columns, expected)
     if contract_errors:
-        log.warning("verify: contract mismatch - %s", "; ".join(contract_errors))
+        log.warning("verify[%s]: contract mismatch - %s", spec.key, "; ".join(contract_errors))
         return _reject(
             state,
             "The returned columns do not match the output contract: "
@@ -116,7 +118,7 @@ def verifier_node(state: SlippageState) -> dict:
             contract_errors=contract_errors,
         )
 
-    findings = sqlcheck.findings(sql, schema, columns=None)
+    findings = sqlcheck.findings(sql, schema, columns=None, expected=expected)
 
     # -- Then the independent review ------------------------------------------------
     # The schema block is large and byte-identical on every call, so it goes FIRST where a
@@ -141,16 +143,18 @@ def verifier_node(state: SlippageState) -> dict:
             "and reject only if it genuinely affects the result):\n"
             + "\n".join("- " + f for f in findings)
         )
-        log.info("verify: %d deterministic finding(s) handed to the reviewer", len(findings))
-    parts.append("Is this a correct slippage listing? Reply with the JSON verdict.")
+        log.info("verify[%s]: %d deterministic finding(s) to adjudicate", spec.key, len(findings))
+    parts.append(
+        "Does this correctly answer the " + spec.key + " query? Reply with the JSON verdict."
+    )
 
-    raw = chat(VERIFIER_SYSTEM, "\n\n".join(parts), temperature=0.0)
+    raw = chat(verifier_system(spec), "\n\n".join(parts), agent="verifier")
     verdict = extract_json(raw, default=_UNREADABLE)
 
     # Fail CLOSED. Defaulting an unreadable verdict to ok=True lets a malformed reply - a
     # trailing comma is enough - silently turn a rejection into an approval, with nothing logged.
     if verdict is _UNREADABLE or "ok" not in verdict:
-        log.warning("verify: verdict unreadable (%d chars) - failing closed", len(raw or ""))
+        log.warning("verify[%s]: verdict unreadable (%d chars) - failing closed", spec.key, len(raw or ""))
         return _reject(
             state,
             "The automated review could not be completed. Re-check the query against the schema "
@@ -158,11 +162,11 @@ def verifier_node(state: SlippageState) -> dict:
         )
 
     if bool(verdict.get("ok")):
-        log.info("verify: ok")
+        log.info("verify[%s]: ok", spec.key)
         # Cleared HERE, not in the SQL Author - that is what lets the feedback survive a failed
         # rewrite. This is the point at which it is genuinely spent: the rewrite has been judged.
         return {"verify_ok": True, "verify_feedback": "", "contract_errors": []}
 
     feedback = str(verdict.get("feedback", ""))
-    log.info("verify: rejected - %s", feedback)
+    log.info("verify[%s]: rejected - %s", spec.key, feedback)
     return _reject(state, feedback)

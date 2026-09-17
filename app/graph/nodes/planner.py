@@ -11,7 +11,7 @@ wrong thing, with nothing anywhere to indicate it.
 """
 from __future__ import annotations
 
-from app.graph import scenarios
+from app.graph import queries, scenarios
 from app.graph.prompts import PLANNER_SYSTEM
 from app.graph.state import SlippageState
 from app.llm import chat
@@ -52,6 +52,20 @@ def render_plan(state: SlippageState) -> str:
         lines.append("    actual date:   " + str(entry.get("actual_date") or "-"))
         if entry.get("notes"):
             lines.append("    notes:         " + str(entry["notes"]))
+    task = plan.get("task") or {}
+    if task:
+        lines.append("")
+        lines.append("  task side (for the activity delay query):")
+        for field in (
+            "task_table", "task_code", "task_well_key", "action_on", "tie_breaker",
+            "target_start", "target_end", "actual_start", "actual_end", "progress",
+            "mapping_table", "mapping_activity_id", "mapping_activity_code", "mapping_crew_code",
+            "description_table", "description_activity_code", "wbs_description",
+        ):
+            lines.append("    " + field.ljust(26) + str(task.get(field) or "NOT RESOLVED"))
+        if task.get("notes"):
+            lines.append("    notes:                    " + str(task["notes"]))
+
     if plan.get("unresolved"):
         lines.append("")
         lines.append("  UNRESOLVED: " + str(plan["unresolved"]))
@@ -63,12 +77,12 @@ def planner_node(state: SlippageState) -> dict:
         [
             "DETECTED DATABASE (the ONLY tables and columns that exist):",
             state.get("grounding", ""),
-            "Bind every slippage scenario above to real columns of this schema. Reply with the "
-            "JSON only.",
+            "Bind BOTH parts to real columns of this schema: every milestone scenario, and "
+            "the task side the activity delay query needs. Reply with the JSON only.",
         ]
     )
 
-    raw = chat(PLANNER_SYSTEM, user, temperature=0.0)
+    raw = chat(PLANNER_SYSTEM, user, agent="planner")
     plan = extract_json(raw, default={})
 
     if not plan.get("scenarios"):
@@ -76,17 +90,43 @@ def planner_node(state: SlippageState) -> dict:
         # unbound - it simply loses the Planner's type warnings and has to resolve names itself.
         log.warning("plan: unreadable (%d chars) - the SQL Author will work from the schema alone",
                     len(raw or ""))
-        return {"column_plan": {}, "plan_notes": "The column plan could not be parsed."}
+        return {
+            "column_plan": {},
+            "plan_notes": "The column plan could not be parsed.",
+            # Only the well query can proceed unbound; the activity query needs the task
+            # table it would have named.
+            "pending_queries": ["well_slippage"],
+        }
 
     done, total = _resolved_count(plan)
-    log.info("plan: %d/%d scenarios bound to columns, well table %s",
-             done, total, plan.get("well_table", "?"))
+    task = plan.get("task") or {}
+    log.info(
+        "plan: %d/%d milestone scenarios bound, task side %s, well table %s",
+        done, total,
+        "bound (" + str(task.get("task_table")) + ")" if task.get("task_table") else "NOT BOUND",
+        plan.get("well_table", "?"),
+    )
     if plan.get("unresolved"):
         log.warning("plan: unresolved - %s", plan["unresolved"])
+
+    # The activity delay query cannot be written without the task table. Dropping it from the
+    # worklist is better than authoring against an unbound plan, which produces a query that
+    # runs and answers about nothing.
+    pending = list(queries.DEFAULT_KEYS)
+    if not task.get("task_table"):
+        pending = [k for k in pending if k != "activity_delay"]
+        log.warning("plan: no task table bound - skipping the activity delay query")
+
+    # --only narrows the worklist, but never widens it past what the plan can support.
+    only = state.get("only")
+    if only:
+        pending = [k for k in pending if k == only]
+        log.info("plan: --only %s -> worklist %s", only, pending or "empty")
 
     return {
         "column_plan": plan,
         "well_table": str(plan.get("well_table", "")),
         "population_filter": str(plan.get("population_filter", "")),
         "plan_notes": str(plan.get("unresolved", "")),
+        "pending_queries": pending,
     }
