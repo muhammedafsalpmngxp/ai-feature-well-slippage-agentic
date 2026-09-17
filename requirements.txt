@@ -1,0 +1,6 @@
+langgraph
+langchain-core
+langchain-openai
+openai
+pyodbc
+python-dotenv
