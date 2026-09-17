@@ -374,7 +374,8 @@ def detect(use_cache: bool = True) -> tuple[str, str]:
             )
 
         # A typo in the allowlist hides a table silently: the query still runs, the author simply
-        # never sees that table and writes around it. Name the entries that matched nothing.
+        # never sees that table and writes around it. Name the entries that matched nothing - and,
+        # where the cause is knowable, name the cause.
         if settings.included_tables:
             matched = {t.lower() for t in tables} | {t.split(".", 1)[-1].lower() for t in tables}
             unmatched = [t for t in settings.included_tables if t not in matched]
@@ -382,6 +383,24 @@ def detect(use_cache: bool = True) -> tuple[str, str]:
                 log.warning(
                     "introspect: INCLUDED_TABLES entries matched no table: %s", ", ".join(unmatched)
                 )
+                # By far the most likely cause, and the one the bare warning hides: the entry
+                # names a schema that ALLOWED_SCHEMAS does not scan, so the table was filtered
+                # out before the allowlist was applied. Saying "matched no table" sends you
+                # hunting for a typo in a name that is perfectly correct.
+                missing = sorted(
+                    {
+                        entry.split(".", 1)[0]
+                        for entry in unmatched
+                        if "." in entry and entry.split(".", 1)[0] not in settings.allowed_schemas
+                    }
+                )
+                if missing:
+                    log.warning(
+                        "introspect: -> schema(s) %s are not in ALLOWED_SCHEMAS (currently %s). "
+                        "ALLOWED_SCHEMAS is applied FIRST, so those tables were never read. Add "
+                        "them to ALLOWED_SCHEMAS in .env.",
+                        ", ".join(missing), ", ".join(settings.allowed_schemas),
+                    )
         pks = _fetch_primary_keys(cur)
         fks = _fetch_foreign_keys(cur, visible=set(tables))
         dup_keys = _detect_duplicate_keys(cur, tables, pks)

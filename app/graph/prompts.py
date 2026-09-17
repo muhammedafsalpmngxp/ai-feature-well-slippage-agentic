@@ -111,7 +111,9 @@ PART A - the well slippage query. For every milestone scenario, resolve:
 PART B - the activity delay query. Resolve the task side (milestone_rules §5.11, §7-§9):
   * task_table        - the task history table (it holds MANY rows per task)
   * task_code         - the column identifying the task, and the source of the activity id
-  * task_well_key     - the column linking a task to its well, WITH its declared type
+  * task_well_key     - the column linking a task to its well
+  * task_well_key_type - its DECLARED TYPE, copied verbatim from the schema block
+  * well_key_type      - the declared type of the well key on the WELL record
   * action_on         - the recency column: the latest record per task describes it now
   * tie_breaker       - the column breaking a tie when two records share an action date
   * target_start / target_end / actual_start / actual_end - the four dates
@@ -125,16 +127,20 @@ Also resolve, once, shared by both queries:
   * well_table         - the table holding one row per well with its milestone dates
   * well_key           - the column identifying the well, WITH its declared type
   * population_filter  - how to keep ONLY wells still in progress, in business terms
+  * completion_column  - the exact column that filter tests (the well completion date)
 
 HARD REQUIREMENTS:
 - Use ONLY table and column names that appear VERBATIM in the SCHEMA BLOCK. Copy them
   character-for-character. Never re-case, pluralise, or blend two similar names.
 - A column exists ONLY under the table the schema lists it under. A generic-sounding name is not
   evidence it is present there, and the same name may appear under several tables.
-- Read the DECLARED TYPE, and report it where it matters. The well key in particular may be
-  typed differently on the well record and the task record; if it is, say so in `notes`, because
-  the Author has to cast explicitly and will not know unless you tell it. Flag any legacy
-  text/ntext column the same way.
+- READ AND REPORT THE DECLARED TYPES OF THE TWO WELL KEYS, exactly as the SCHEMA BLOCK spells
+  them. This is not advice; it is the single most costly thing to get wrong here. Where the two
+  sides are typed differently - a text type on one and a numeric type on the other is the usual
+  case - joining them without an explicit CAST on BOTH sides fails outright the moment a value
+  appears that the narrower type cannot hold. That has cost a rewrite on three separate runs.
+  Copy both types verbatim into the fields above and restate any mismatch in `notes`. Flag a
+  legacy text/ntext column the same way.
 - A deadline is DERIVED, never stored. Do not look for a stored deadline column; if you find one
   that looks like a deadline, do not use it.
 - If you cannot resolve something from the schema, set it to null and explain why in
@@ -146,6 +152,7 @@ Respond with ONLY this JSON, no prose:
   "well_table": "<schema.table>",
   "well_key": "<column>",
   "population_filter": "<how to keep only in-progress wells, naming the exact column>",
+  "completion_column": "<the exact column that filter tests>",
   "scenarios": {
     "<scenario_key>": {
       "table": "<schema.table>",
@@ -156,7 +163,9 @@ Respond with ONLY this JSON, no prose:
   },
   "task": {
     "task_table": "<schema.table>", "task_code": "<column>",
-    "task_well_key": "<column>", "action_on": "<column>", "tie_breaker": "<column>",
+    "task_well_key": "<column>", "task_well_key_type": "<declared type>",
+    "well_key_type": "<declared type>",
+    "action_on": "<column>", "tie_breaker": "<column>",
     "target_start": "<column>", "target_end": "<column>",
     "actual_start": "<column>", "actual_end": "<column>", "progress": "<column>",
     "mapping_table": "<schema.table>", "mapping_activity_id": "<column>",

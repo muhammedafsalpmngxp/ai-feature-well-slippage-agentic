@@ -112,6 +112,10 @@ MILESTONE ARITHMETIC - follow milestone_rules §1-§4 exactly:
 - There is no tolerance window. ON_SCHEDULE means the completion date EQUALS the deadline exactly.
 - The headline verdict tests the scenarios in the given priority order and takes the first that
   FAILED, honouring each scenario's own 'fails when' rule.
+- A VARIANCE IS ONLY REPORTED FOR A GRADED OUTCOME. Where a scenario's status is terminal but
+  ungraded - construction's RIG_ARRIVED is the one such case - its *_variance_days is NULL, not
+  a day count. There is no early/on-time/late version of "the rig arrived", so a number there
+  claims a precision the data does not carry. Only MISSED yields a figure: deadline to today.
 - PREFER deriving the failure condition ONCE and filtering on its result
   (WHERE well_slippage_status IS NOT NULL) over writing the same condition in both the CASE and
   the WHERE. §4 warns those two copies drift apart silently; deriving it once makes that
@@ -184,8 +188,14 @@ TASK ARITHMETIC - follow milestone_rules §5, and §5.11 for the order of the ch
 6. RESOLVE TASK -> ACTIVITY -> WBS. Two hops, both lookups, neither optional:
    - activity_id is the leading part of the task code, BEFORE its first separator. Guard that
      the separator exists, or a code without one yields a wrong activity rather than none.
-   - activity_id -> the activity mapping -> the activity code, and the owning crew code.
-   - activity code -> the activity description lookup -> the WBS description.
+   - activity_id -> the activity mapping -> the activity CODE. (This table also has a crew
+     column; it is NOT the one the contract wants - see below.)
+   - activity code -> the activity description lookup -> the WBS description AND the crew_code.
+
+   ⚠ crew_code COMES FROM THE SECOND HOP, the activity-description lookup - never from the
+   mapping table. Both tables carry a crew column and they are not the same thing: the mapping's
+   is the superseded scheme. Return the description lookup's crew_code, and return it only when
+   the collapsed lookup gives one unambiguously.
    The exact columns, the legacy text-column cast, and the Old/New pitfall are in
    business_rules §3. Follow it. Never guess a WBS or use the activity id as one.
    Use LEFT joins so unmapped work stays visible rather than vanishing from the listing.
@@ -250,15 +260,24 @@ population filter.
    one activity repeated forty times as forty delayed activities. Use
    COUNT(DISTINCT <activity code>) over that well's delayed tasks only.
 
-4. "DELAYED" means the task's schedule risk is not GREEN - it is late at the end, or late or
-   slipping at the start. Count the activity code once however many of its tasks are late.
-   An activity whose tasks are all on schedule must not appear in the count.
+4. "DELAYED" MEANS THE END IS LATE - the task finished after its planned end, or is not
+   finished and that date has passed. In the end-status vocabulary that is COMPLETED_LATE or
+   OVERDUE, which is the same set as schedule risk RED.
+   Do NOT use "schedule_risk <> GREEN": that pulls in the two AMBER start risks, and a task
+   that started late but is not yet late at the end has lost no schedule time. Counting it
+   overstates every well.
+   Count an activity code ONCE however many of its tasks are late. An activity whose tasks are
+   all on schedule must not appear.
 
 5. THE ACTIVITY CODE is resolved from the task code through the activity mapping, exactly as
    business_rules §3 sets out: the activity id is the leading part of the task code before its
    first separator, guarded for a code with no separator, then mapped to the activity code.
-   Where a task has no mapping, count it under a single '(unmapped)' bucket rather than dropping
-   it - unmapped late work is still late work, and dropping it understates the well.
+
+   ⚠ A TASK WITH NO MAPPING IS EXCLUDED FROM THE COUNT. Do NOT substitute '(unmapped)', do NOT
+   COALESCE, do NOT ISNULL. That placeholder is not an activity code - it is a task whose code
+   is unknown - so counting it adds a phantom +1 to any well with unmapped late work.
+   business_rules §3 states this outright about the same pattern on WBS. Count
+   COUNT(DISTINCT <activity code>) over non-NULL codes only.
 
 6. INCLUDE ONLY WELLS WITH AT LEAST ONE DELAYED ACTIVITY CODE. A well with nothing late is not a
    finding, and padding the result with zero rows hides the ones that matter.

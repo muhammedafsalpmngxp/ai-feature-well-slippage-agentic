@@ -10,6 +10,7 @@ import time
 from app.config import settings
 from app.db.connection import get_connection
 from app.graph import queries
+from app import rework
 from app.graph.state import SlippageState
 from app.observability import get_logger
 
@@ -60,6 +61,16 @@ def executor_node(state: SlippageState) -> dict:
     except Exception as exc:  # noqa: BLE001 - the error text is fed back for self-correction
         elapsed = time.perf_counter() - start
         log.warning("exec: failed in %.2fs - %s", elapsed, exc)
+        # Recorded for the rework corpus: an execution failure means the SQL was wrong about
+        # the database, which is the class of mistake a prompt or a deterministic check can
+        # actually prevent.
+        rework.record(
+            rework.KIND_EXECUTION,
+            query=state.get("current_query", ""),
+            reason=str(exc),
+            sql=sql,
+            attempt=state.get("retry_count", 0) + 1,
+        )
         return {"exec_error": str(exc), "retry_count": state.get("retry_count", 0) + 1}
 
     finally:

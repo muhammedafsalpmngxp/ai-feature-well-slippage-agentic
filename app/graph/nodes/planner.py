@@ -57,12 +57,20 @@ def render_plan(state: SlippageState) -> str:
         lines.append("")
         lines.append("  task side (for the activity delay query):")
         for field in (
-            "task_table", "task_code", "task_well_key", "action_on", "tie_breaker",
+            "task_table", "task_code", "task_well_key", "task_well_key_type", "well_key_type",
+            "action_on", "tie_breaker",
             "target_start", "target_end", "actual_start", "actual_end", "progress",
             "mapping_table", "mapping_activity_id", "mapping_activity_code", "mapping_crew_code",
             "description_table", "description_activity_code", "wbs_description",
         ):
             lines.append("    " + field.ljust(26) + str(task.get(field) or "NOT RESOLVED"))
+        left, right = task.get("task_well_key_type"), task.get("well_key_type")
+        if left and right and str(left).split("(")[0].strip().lower() != str(right).split("(")[0].strip().lower():
+            lines.append(
+                "    ⚠ WELL KEY TYPES DIFFER: task side is " + str(left) + ", well side is "
+                + str(right) + " - CAST BOTH SIDES explicitly or the join fails on a "
+                "non-numeric id."
+            )
         if task.get("notes"):
             lines.append("    notes:                    " + str(task["notes"]))
 

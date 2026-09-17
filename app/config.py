@@ -20,6 +20,10 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _csv(name: str, default: str = "") -> tuple[str, ...]:
+    return tuple(v.strip().lower() for v in _get(name, default).split(",") if v.strip())
+
+
 def _first(*names: str, default: str = "") -> str:
     """First non-empty of several env names.
 
@@ -74,12 +78,15 @@ class Settings:
     # The slippage domain spans the well tables, the two activity lookups in dbo, and the
     # project/ref lookups. Narrower than "every schema" on purpose: the schema block goes into
     # every SQL-writing and verifying prompt, so each extra table is paid for on every call.
+    # Which schemas introspection reads, straight from .env.
+    #
+    # ⚠ THIS IS APPLIED BEFORE INCLUDED_TABLES. The schema filter runs inside the catalogue
+    # queries; the table allowlist is applied to what comes back. So a table named in
+    # INCLUDED_TABLES whose schema is missing here is dropped before the allowlist ever sees it,
+    # and reports as "matched no table". When you point .env at a database that keeps its tables
+    # in a different schema, set BOTH.
     allowed_schemas: tuple[str, ...] = field(
-        default_factory=lambda: tuple(
-            s.strip().lower()
-            for s in _get("ALLOWED_SCHEMAS", "well,dbo,project,ref,core").split(",")
-            if s.strip()
-        )
+        default_factory=lambda: _csv("ALLOWED_SCHEMAS", "well,dbo,project,ref,core")
     )
     # An ALLOWLIST. When set, ONLY these tables are introspected and nothing else reaches any
     # prompt. Each entry is "schema.table" (exact, preferred) or a bare "table" name, which
@@ -114,6 +121,16 @@ class Settings:
     # counter lets unrelated syntax errors earlier in the run leave the Verifier with zero
     # rewrites, so it rejects and is overruled immediately.
     verify_retries: int = field(default_factory=lambda: _get_int("VERIFY_RETRIES", 1))
+
+    # The well the per-well query is EXECUTED against when it is generated and verified.
+    # It is only a sample: the query filters on a bound `?` parameter, so it does not care
+    # which well - it just needs one to return rows the Verifier can judge. At serve time the
+    # API binds whatever well the user asks for.
+    #
+    # Making this a fixed setting is what removes the last dependency between the queries and
+    # lets all three generate concurrently. Prefer a well that HAS late tasks: verifying against
+    # an empty result only checks the SQL text, never its output.
+    sample_well_id: str = field(default_factory=lambda: _get("SAMPLE_WELL_ID", "33151"))
 
     log_level: str = field(default_factory=lambda: _get("LOG_LEVEL", "INFO"))
     # Shared log file, so a run can be followed from a terminal other than the one that started

@@ -12,6 +12,7 @@ enforced here without asking.
 from __future__ import annotations
 
 from app.config import settings
+from app import rework
 from app.graph import queries, sqlcheck
 from app.graph.nodes.planner import render_plan
 from app.graph.prompts import verifier_system
@@ -76,6 +77,18 @@ def _reject(state: SlippageState, feedback: str, contract_errors: list[str] | No
     explain them WITH a caveat rather than explaining nothing - and the run has a record that
     this query was tried, which is what stops the author re-emitting it.
     """
+    # A verifier rejection is the most expensive kind of rework - the SQL was safe, it ran, it
+    # returned data, and the data was still wrong. Those are the rejections worth mining for
+    # prompt changes, so they are recorded with the SQL that earned them.
+    rework.record(
+        rework.KIND_CONTRACT if contract_errors else rework.KIND_VERIFY,
+        query=state.get("current_query", ""),
+        reason=feedback,
+        sql=state.get("sql", ""),
+        attempt=state.get("verify_retry_count", 0) + 1,
+        rows_returned=len(state.get("rows") or []),
+    )
+
     rejected = state.get("rejected", []) + [
         {
             "sql": state.get("sql", ""),
@@ -118,7 +131,11 @@ def verifier_node(state: SlippageState) -> dict:
             contract_errors=contract_errors,
         )
 
-    findings = sqlcheck.findings(sql, schema, columns=None, expected=expected)
+    plan_data = state.get("column_plan") or {}
+    findings = sqlcheck.findings(
+        sql, schema, columns=None, expected=expected,
+        completion_column=str(plan_data.get("completion_column", "")),
+    )
 
     # -- Then the independent review ------------------------------------------------
     # The schema block is large and byte-identical on every call, so it goes FIRST where a

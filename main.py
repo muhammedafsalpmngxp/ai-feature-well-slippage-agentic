@@ -6,6 +6,7 @@
     python main.py --out DIR        write the brief, each query's SQL and its rows to DIR
     python main.py --only KEY       run just one query
     python main.py --well 33785     drill the detail query into this well
+    python main.py --rework         summarise what rework has cost, worst cause first
     python main.py --detect-only    just introspect and show what was detected
 """
 from __future__ import annotations
@@ -72,9 +73,19 @@ def main() -> int:
     parser.add_argument("--well", metavar="ID",
                         help="well to drill into for the per-well detail query; "
                              "defaults to the worst well the summary finds")
+    parser.add_argument("--rework", action="store_true",
+                        help="summarise recorded rejections and execution failures, then stop")
     parser.add_argument("--detect-only", action="store_true",
                         help="introspect and report what was detected, then stop")
     args = parser.parse_args()
+
+    # Before the database check: the corpus is a local file, and a report should be readable
+    # when the database is unreachable - that is often exactly when you want it.
+    if args.rework:
+        from app import rework
+
+        print(rework.report())
+        return 0
 
     ok, message = ping()
     if not ok:

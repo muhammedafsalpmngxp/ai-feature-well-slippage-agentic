@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 
 from app.graph import queries
+from app import rework
 from app.graph.state import SlippageState
 from app.observability import get_logger
 
@@ -151,13 +152,24 @@ def count_parameters(sql: str) -> int:
     return scrub(sql).count("?")
 
 
+def _reject(state: SlippageState, reason: str) -> dict:
+    log.warning("validate: rejected - %s", reason)
+    rework.record(
+        rework.KIND_VALIDATION,
+        query=state.get("current_query", ""),
+        reason=reason,
+        sql=state.get("sql", ""),
+        attempt=state.get("retry_count", 0) + 1,
+    )
+    return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
+
+
 def validator_node(state: SlippageState) -> dict:
     sql = state.get("sql", "")
 
     ok, reason = is_select_only(sql)
     if not ok:
-        log.warning("validate: rejected - %s", reason)
-        return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
+        return _reject(state, reason)
 
     unknown = unknown_tables(sql, state.get("schema", ""))
     if unknown:
@@ -165,8 +177,7 @@ def validator_node(state: SlippageState) -> dict:
             "Unknown table(s): " + ", ".join(unknown) + " - not in the schema block. Use only the "
             "exact schema.table names listed there."
         )
-        log.warning("validate: rejected - %s", reason)
-        return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
+        return _reject(state, reason)
 
     # A per-well query must bind its well, not inline it. Checked HERE rather than left to the
     # database: an inlined id executes perfectly and answers about whichever well the pipeline
@@ -182,8 +193,7 @@ def validator_node(state: SlippageState) -> dict:
                 "DECLARE. Compare against `?` directly, e.g. "
                 "CONVERT(varchar(50), <task well column>) = CONVERT(varchar(50), ?)."
             )
-            log.warning("validate: rejected - %s", reason)
-            return {"validation_error": reason, "retry_count": state.get("retry_count", 0) + 1}
+            return _reject(state, reason)
 
     log.info("validate: ok - single read-only SELECT")
     return {"validation_error": ""}

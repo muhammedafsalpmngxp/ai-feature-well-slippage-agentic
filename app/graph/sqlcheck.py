@@ -80,11 +80,149 @@ def check_sql(sql: str, schema: str) -> list[str]:
     return concerns
 
 
-def check_rules(sql: str) -> list[str]:
+_CTE_NAME_RE = re.compile(r"(?:^\s*WITH|,)\s*([A-Za-z_]\w*)\s+AS\s*\(", re.IGNORECASE | re.MULTILINE)
+# `alias.column` references, and the `FROM/JOIN <cte> AS <alias>` that binds an alias to a CTE.
+_QUALIFIED_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+# The source may be schema-qualified, so it must allow dots. Without them `FROM well.task_daily
+# AS t` did not match at all, so an alias reused for both a real table and a CTE looked
+# unambiguous - and the scope guard above silently stopped protecting anything.
+_FROM_ALIAS_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w.]*)\s+(?:AS\s+)?([A-Za-z_]\w*)\b", re.IGNORECASE
+)
+
+
+def _balanced_body(sql: str, open_at: int) -> str:
+    """The text inside the parentheses starting at `open_at`, respecting nesting."""
+    depth, i, n = 0, open_at, len(sql)
+    while i < n:
+        if sql[i] == "(":
+            depth += 1
+        elif sql[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return sql[open_at + 1 : i]
+        i += 1
+    return ""
+
+
+def _projected_columns(body: str) -> set[str] | None:
+    """Output names of a CTE's final SELECT list, or None when they cannot be read.
+
+    Returns None rather than guessing on `SELECT *`, a set-operator, or anything else this
+    cannot parse confidently - an unreadable CTE must produce no finding at all, never a wrong
+    one. That conservatism is the point: this is advisory evidence, so a false positive costs
+    the Verifier a moment, and a missed one costs nothing it was not already missing.
+    """
+    upper = body.upper()
+    if " UNION " in upper or " EXCEPT " in upper or " INTERSECT " in upper:
+        return None
+    select_at = upper.rfind("SELECT")
+    if select_at == -1:
+        return None
+    # Word-boundary match, not "\nFROM": the FROM is almost always indented, and anchoring to
+    # the line start silently made every CTE unreadable - the check found nothing at all.
+    from_match = re.search(r"\bFROM\b", upper[select_at:])
+    if not from_match:
+        return None
+    from_at = select_at + from_match.start()
+    if "*" in body[select_at:from_at]:
+        return None
+
+    names: set[str] = set()
+    depth = 0
+    item = ""
+    for ch in body[select_at + len("SELECT") : from_at] + ",":
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            token = item.strip()
+            if token:
+                # "expr AS name" -> name; "x.col" -> col; a bare word -> itself.
+                parts = re.split(r"\s+AS\s+", token, flags=re.IGNORECASE)
+                tail = parts[-1].strip().strip("[]")
+                names.add((tail.rsplit(".", 1)[-1] if "." in tail else tail).lower())
+            item = ""
+            continue
+        item += ch
+    return names or None
+
+
+def check_cte_projection(sql: str) -> list[str]:
+    """Columns read from a CTE that the CTE never projects.
+
+    This is the "Invalid column name" failure that has cost a rewrite three times: a CTE selects
+    what it needs internally, a later stage reads a column it did not carry forward, and the
+    mistake only surfaces as an ODBC error after a full database round trip. The information to
+    catch it is entirely in the SQL text.
+    """
+    if not sql or "with" not in sql.lower():
+        return []
+
+    projected: dict[str, set[str]] = {}
+    for match in _CTE_NAME_RE.finditer(sql):
+        open_at = sql.find("(", match.end() - 1)
+        if open_at == -1:
+            continue
+        columns = _projected_columns(_balanced_body(sql, open_at))
+        if columns:
+            projected[match.group(1).lower()] = columns
+    if not projected:
+        return []
+
+    # Which alias refers to which CTE.
+    #
+    # ⚠ ALIASES ARE SCOPED AND THIS CANNOT SEE SCOPE. A real generated query bound `t` to
+    # well.task_daily inside one CTE and to latest_task_cte later; a global map takes the last
+    # binding and misattributes every earlier reference - four confident, wrong findings on a
+    # query that was correct.
+    #
+    # So an alias is only judged when it is bound to exactly ONE source in the whole statement.
+    # A reused alias is skipped entirely: this check exists to catch a specific mistake cheaply,
+    # and a false accusation sent to the Verifier costs exactly the rework it is meant to save.
+    bindings: dict[str, set[str]] = {}
+    for source, alias in _FROM_ALIAS_RE.findall(sql):
+        if alias.upper() in ("AS", "ON", "WHERE", "GROUP", "ORDER", "INNER", "LEFT", "JOIN"):
+            continue
+        bindings.setdefault(alias.lower(), set()).add(source.lower())
+
+    alias_of: dict[str, str] = {
+        alias: next(iter(sources))
+        for alias, sources in bindings.items()
+        if len(sources) == 1 and next(iter(sources)) in projected
+    }
+    # A CTE referenced by its own name, with no alias, as long as that name is not also reused.
+    for name in projected:
+        if len(bindings.get(name, {name})) == 1:
+            alias_of.setdefault(name, name)
+
+    concerns: list[str] = []
+    for alias, column in _QUALIFIED_RE.findall(sql):
+        cte = alias_of.get(alias.lower())
+        if not cte:
+            continue
+        if column.lower() not in projected[cte]:
+            concern = (
+                "`" + alias + "." + column + "` is read from CTE `" + cte + "`, which does not "
+                "project a column of that name - add it to that CTE's SELECT list, or the query "
+                "fails as \"Invalid column name\""
+            )
+            if concern not in concerns:
+                concerns.append(concern)
+    return concerns
+
+
+def check_rules(sql: str, completion_column: str = "") -> list[str]:
     """Textual checks for the two milestone rules a wrong query most often breaks silently.
 
     Both are detectable from the SQL alone, and both fail in a way no error ever reveals: the
     query succeeds and the numbers are simply wrong.
+
+    `completion_column` is the column the population filter tests, supplied by the Planner from
+    the LIVE schema. It used to be the literal "eng_completion_date", which made this module the
+    one place that knew a database column name - and a rename would have retired the check in
+    silence, which is worse than never having had it. Blank means that check is skipped.
     """
     if not sql:
         return []
@@ -102,11 +240,16 @@ def check_rules(sql: str) -> list[str]:
 
     # milestone_rules §4 population: only wells still in progress, so a completion date is always
     # absent inside this query and any branch testing it for being PRESENT is unreachable.
-    if re.search(r"eng_completion_date\s+is\s+not\s+null", low):
-        concerns.append(
-            "the query tests a completion date for being present, but the population filter keeps "
-            "only wells where it is absent - that branch is unreachable (milestone_rules §4)"
-        )
+    if completion_column:
+        # The  is a word boundary, so a column named `x` cannot match `prefix_x`.
+        # The word boundary stops a column named `x` matching `prefix_x`.
+        pattern = r"\b" + re.escape(completion_column.lower()) + r"\s+is\s+not\s+null"
+        if re.search(pattern, low):
+            concerns.append(
+                "the query tests " + completion_column + " for being present, but the population "
+                "filter keeps only wells where it is absent - that branch is unreachable "
+                "(milestone_rules §4)"
+            )
 
     return concerns
 
@@ -140,10 +283,15 @@ def findings(
     schema: str,
     columns: list[str] | None = None,
     expected: list[str] | None = None,
+    completion_column: str = "",
 ) -> list[str]:
     """Every deterministic finding, for the Verifier to adjudicate."""
     try:
-        out = check_sql(sql, schema) + check_rules(sql)
+        out = (
+            check_sql(sql, schema)
+            + check_rules(sql, completion_column)
+            + check_cte_projection(sql)
+        )
         if columns is not None:
             out += check_contract(columns, expected)
         return list(dict.fromkeys(out))  # de-duplicate, keep order

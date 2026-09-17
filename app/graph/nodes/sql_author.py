@@ -52,9 +52,9 @@ def _target_well_block(spec, state: SlippageState) -> str:
         "parameter when the query runs. Write the filter as a comparison against a single `?` "
         "marker - exactly one, nowhere else in the statement.\n"
         "Convert BOTH sides explicitly, e.g. "
-        "CONVERT(varchar(50), <task well column>) = CONVERT(varchar(50), ?). The well key is "
-        "typed differently on the well record and the task record, so an implicit conversion "
-        "fails outright on a non-numeric id such as '0000F'.\n"
+        "CONVERT(varchar(50), <task well column>) = CONVERT(varchar(50), ?). Check the declared "
+        "types in the COLUMN PLAN above: where the two sides differ, an implicit conversion "
+        "fails outright on the first value the narrower type cannot hold.\n"
         "Writing any well id as a literal is a defect: it produces a query that runs perfectly "
         "and answers about the wrong well for the rest of its life."
     )

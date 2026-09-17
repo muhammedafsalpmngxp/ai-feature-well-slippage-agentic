@@ -122,7 +122,12 @@ SCENARIOS: tuple[Scenario, ...] = (
             "arrived: construction can fail ONLY via MISSED (deadline passed, rig still not on "
             "site). This milestone therefore cannot detect a construction delay on a well whose "
             "rig is already there - which business_rules §4 states explicitly, and is a limit of "
-            "the data, not of the query."
+            "the data, not of the query. "
+            "⚠ AND IT CARRIES NO VARIANCE WHEN THE RIG ARRIVED. RIG_ARRIVED is ungraded - there "
+            "is no early, on-time or late version of it - so construction_variance_days must be "
+            "NULL in that case. Only MISSED has a measurable figure: deadline to today. "
+            "Reporting a day count against an ungraded outcome states a precision the data does "
+            "not have."
         ),
     ),
     Scenario(
