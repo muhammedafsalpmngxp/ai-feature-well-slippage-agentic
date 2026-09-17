@@ -1,0 +1,42 @@
+# ── Secrets ───────────────────────────────────────────────────────────────────
+# .env holds the SQL Server login and the OpenAI key. Negation is last so an
+# .env.example placeholder can still be committed.
+.env
+.env.*
+!.env.example
+
+# ── Detected database content ─────────────────────────────────────────────────
+# Rebuilt on demand by `python main.py --detect-only --refresh`, so nothing is
+# lost by ignoring it. Kept out of git because it is not just structure:
+# value_hints.txt holds REAL values sampled from the live lookup tables, and
+# schema.txt names every column of a client database.
+.cache/
+
+# ── Run outputs ───────────────────────────────────────────────────────────────
+# slipped_wells.csv is live well data; the brief quotes real well ids and dates.
+out/
+out*/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Editors and OS ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
