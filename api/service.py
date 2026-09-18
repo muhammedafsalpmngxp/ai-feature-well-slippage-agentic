@@ -6,11 +6,14 @@ takes a couple of seconds and costs nothing, instead of five minutes and a stack
 
 That split is the whole point of the design:
 
-    main.py   (slow, occasional)  ->  writes verified SQL to out/
+    main.py   (slow, occasional)  ->  freezes verified SQL into sql/
     this API  (fast, every click) ->  runs it
 
-A consequence worth stating: the API is only ever as current as the last verified run. It
-reports when that was, so a stale dashboard is visible rather than assumed fresh.
+Since the freeze landed, main.py is usually not slow either: it re-authors only when the
+database's structure changes, and otherwise just executes what is already in sql/ (app/frozen.py).
+
+A consequence worth stating: the API is only ever as current as the last run. It reports when
+that was, so a stale dashboard is visible rather than assumed fresh.
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 
+from app import frozen
 from app.db.connection import get_connection
 from app.graph import queries
 from app.graph.nodes.validator import is_select_only
@@ -43,6 +47,15 @@ class QueryUnavailable(RuntimeError):
 
 
 def sql_path(key: str) -> str:
+    """Where this query's SQL is read from.
+
+    sql/ is the frozen store - the reviewed artefact, committed, and the source of truth. out/
+    is the previous location and is still honoured so an existing checkout keeps working after
+    the freeze landed; it is a fallback, never preferred.
+    """
+    path = frozen.path_for(key)
+    if os.path.exists(path):
+        return path
     return os.path.join(OUT_DIR, key + ".sql")
 
 
@@ -59,7 +72,12 @@ def load_sql(key: str) -> str:
             key + " has not been generated yet. Run `python main.py --out out` first."
         )
     with open(path, encoding="utf-8") as handle:
-        sql = handle.read().strip().rstrip(";").strip()
+        text = handle.read()
+
+    # A frozen file opens with a provenance header. Strip it here rather than executing it: the
+    # comment is harmless to SQL Server, but `activity_for_well` tests the statement for a bound
+    # `?` and a header that happened to contain one would read as a parameter that is not there.
+    sql = frozen.body_of(text).rstrip(";").strip()
 
     ok, reason = is_select_only(sql)
     if not ok:
@@ -188,47 +206,68 @@ def brief() -> str:
 
 
 def schema_drifted() -> bool | None:
-    """True when the live database no longer matches what the cached queries were built against.
+    """True when re-running the pipeline would actually author new SQL.
 
     This is the one failure the dashboard could not otherwise see. A renamed or dropped column
-    leaves the generated SQL syntactically fine but referencing something gone, so it fails at
+    leaves the frozen SQL syntactically fine but referencing something gone, so it fails at
     execution as an opaque ODBC "Invalid object name" - and a 500 tells a reader nothing about
-    what to do. Comparing fingerprints says exactly what happened: the schema moved, re-run the
-    analysis.
+    what to do. Comparing fingerprints says exactly what happened: the schema moved, re-run.
+
+    ⚠ COMPARED AGAINST THE FROZEN QUERIES' STRUCTURAL FINGERPRINT, not introspection's cache
+    key. The cache key also folds in row counts, so it flipped on every ordinary data load - and
+    the banner it drove told a reader to re-run when a re-run would now reuse the same frozen SQL
+    and change nothing on the page. A prompt to act that does nothing teaches people to ignore
+    the banner, which costs the one time it is real. Staleness of the FIGURES is a separate
+    signal, already carried by `age_hours`.
 
     Returns None rather than False when the check itself could not run, so "unknown" is never
     reported as "fine". Cached, because it costs several catalogue reads.
     """
 
-    def check() -> bool | None:
-        from app.db.introspect import _fingerprint, _read, _FINGERPRINT_PATH
+    live = live_fingerprint()
+    if not live:
+        return None
+    stamped = {
+        row["fingerprint"] for row in frozen.describe()
+        if row["state"] != "missing" and row["fingerprint"]
+    }
+    if not stamped:
+        # Nothing frozen carries a fingerprint, so there is nothing to compare. Unknown, not
+        # fine: the queries on disk may predate the freeze entirely.
+        return None
+    return any(f != live for f in stamped)
 
-        recorded = _read(_FINGERPRINT_PATH)
-        if not recorded:
-            return None
-        conn = get_connection()
-        try:
-            return _fingerprint(conn.cursor()) != recorded
-        finally:
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
+
+def live_fingerprint() -> str:
+    """The live structural fingerprint, cached, or "" when it could not be read.
+
+    Shared by the drift check and by status() so one request reads the catalogue ONCE. They used
+    to compute it separately, and status() simply did not - which is why every query reported its
+    freeze as "unknown" on a request that had just established the schema had not drifted at all.
+    Two answers to the same question in one payload, one of them needlessly vague.
+    """
+
+    def read() -> str:
+        from app.db.introspect import live_structure_fingerprint
+
+        return live_structure_fingerprint()
 
     try:
-        return _cached("schema_drift", check)
+        return _cached("live_fingerprint", read)
     except Exception as exc:  # noqa: BLE001 - a status read must never fail the dashboard
-        log.warning("status: drift check failed (%s)", exc)
-        return None
+        log.warning("status: could not read the live schema fingerprint (%s)", exc)
+        return ""
 
 
 def status() -> dict:
     """What exists on disk, and how old it is - so a stale dashboard is visible."""
-    out: dict[str, Any] = {"out_dir": OUT_DIR, "queries": {}}
-    # Note this reflects the STRUCTURE the queries were built against, and the fingerprint also
-    # covers row counts - so ordinary data loading flips it too. It means "re-run to be current",
-    # not "the queries are broken".
+    out: dict[str, Any] = {"out_dir": OUT_DIR, "sql_dir": frozen.SQL_DIR, "queries": {}}
+    # True only when a re-run would actually author new SQL - see schema_drifted. Ordinary data
+    # loading no longer flips it.
     out["schema_drifted"] = schema_drifted()
+    # Per-query freeze state: current | stale | hand-edited | unverified | missing. This is what
+    # tells a reader whether the next run costs tokens, and whether what ran is what was approved.
+    out["frozen"] = {row["key"]: row for row in frozen.describe(live_fingerprint())}
     newest = 0.0
     for spec in queries.QUERIES:
         path = sql_path(spec.key)
@@ -243,8 +282,20 @@ def status() -> dict:
                 datetime.fromtimestamp(mtime, timezone.utc).isoformat() if exists else None
             ),
         }
+    # ⚠ THE LAST RUN IS NOT THE SQL'S MTIME ANY MORE.
+    #
+    # It used to be, and that was fine while every run rewrote every .sql file. Now a run on an
+    # unchanged schema reuses the frozen SQL and touches nothing in sql/, so keying "last
+    # analysis" off those files would have the dashboard report figures as days old minutes
+    # after producing them - and the staleness warning is only worth anything if it is true.
+    #
+    # brief.md is written by every run that passed --out, which is how the API invokes it, so its
+    # mtime is when the numbers on the page were last computed. The SQL mtimes remain the right
+    # answer for `generated_at` above: that genuinely is when the query was written.
+    brief_path = os.path.join(OUT_DIR, "brief.md")
+    last_run = os.path.getmtime(brief_path) if os.path.exists(brief_path) else newest
     out["last_run"] = (
-        datetime.fromtimestamp(newest, timezone.utc).isoformat() if newest else None
+        datetime.fromtimestamp(last_run, timezone.utc).isoformat() if last_run else None
     )
-    out["age_hours"] = round((time.time() - newest) / 3600, 1) if newest else None
+    out["age_hours"] = round((time.time() - last_run) / 3600, 1) if last_run else None
     return out

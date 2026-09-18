@@ -10,6 +10,18 @@ class SlippageState(TypedDict, total=False):
     schema: str                     # rendered schema block
     value_hints: str                # real coded values from the lookup tables
     grounding: str                  # the two above, as one prompt section
+    # Hash of the live STRUCTURE - identity, columns, types, constraints. This is the key the
+    # frozen queries in sql/ are stamped with and matched against; it excludes row counts, so
+    # loading data does not invalidate a query. Empty when the catalogue could not be read,
+    # which forces authoring rather than trusting an unchecked freeze. See app/frozen.py.
+    schema_fingerprint: str
+
+    # -- Step 2a: the frozen store --------------------------------------------
+    force_regenerate: bool          # --regenerate: ignore sql/ and author everything again
+    reused_queries: list[str]       # keys served from sql/ without an agent
+    # Keys the freeze could not serve - stale, missing, or frozen SQL that no longer runs. The
+    # Planner narrows its worklist to these, so a partially frozen run only pays for the rest.
+    needs_authoring: list[str]
 
     # -- Step 2: the Planner --------------------------------------------------
     # Which detected column carries each scenario's expected date, actual date and filters,

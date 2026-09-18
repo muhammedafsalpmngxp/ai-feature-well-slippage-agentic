@@ -98,12 +98,17 @@ def planner_node(state: SlippageState) -> dict:
         # unbound - it simply loses the Planner's type warnings and has to resolve names itself.
         log.warning("plan: unreadable (%d chars) - the SQL Author will work from the schema alone",
                     len(raw or ""))
+        # Only the well query can proceed unbound; the activity query needs the task table it
+        # would have named. Still intersected with what the frozen store left outstanding, or an
+        # unreadable plan would re-author a query that sql/ had already served.
+        unbound = ["well_slippage"]
+        outstanding = state.get("needs_authoring")
+        if outstanding is not None:
+            unbound = [k for k in unbound if k in set(outstanding)]
         return {
             "column_plan": {},
             "plan_notes": "The column plan could not be parsed.",
-            # Only the well query can proceed unbound; the activity query needs the task
-            # table it would have named.
-            "pending_queries": ["well_slippage"],
+            "pending_queries": unbound,
         }
 
     done, total = _resolved_count(plan)
@@ -130,6 +135,15 @@ def planner_node(state: SlippageState) -> dict:
     if only:
         pending = [k for k in pending if k == only]
         log.info("plan: --only %s -> worklist %s", only, pending or "empty")
+
+    # Whatever the frozen store already served is not authored again. Narrowing only - this can
+    # never add a key the plan cannot support. Absent on a run where nothing was reusable, in
+    # which case the worklist above stands as it is.
+    outstanding = state.get("needs_authoring")
+    if outstanding is not None:
+        pending = [k for k in pending if k in set(outstanding)]
+        log.info("plan: %d quer(y/ies) already frozen -> worklist %s",
+                 len(queries.DEFAULT_KEYS) - len(outstanding), pending or "empty")
 
     return {
         "column_plan": plan,

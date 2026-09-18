@@ -17,6 +17,15 @@
 out/
 out*/
 
+# ── NOT ignored: sql/ ─────────────────────────────────────────────────────────
+# The frozen, verified queries (app/frozen.py) are COMMITTED on purpose, and adding them here
+# would quietly undo the point of freezing them. They are schema, not data - a SELECT naming
+# columns, with no well ids or dates in it - and they are the artefact a reviewer reads to see
+# what changed about how slippage is calculated. Committed, they also let a fresh clone serve
+# the dashboard with no API key and no agent run at all.
+#   sql/*.tmp is the atomic-write scratch file, which should never be committed.
+sql/*.tmp
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

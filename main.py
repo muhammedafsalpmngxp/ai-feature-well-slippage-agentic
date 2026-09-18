@@ -8,6 +8,12 @@
     python main.py --well 33785     drill the detail query into this well
     python main.py --rework         summarise what rework has cost, worst cause first
     python main.py --detect-only    just introspect and show what was detected
+    python main.py --frozen         report which queries in sql/ are still valid, then stop
+    python main.py --regenerate     re-author every query, ignoring the frozen SQL in sql/
+
+The verified SQL is FROZEN into sql/ and reused until the database's structure changes, so an
+ordinary run costs a few seconds rather than a few minutes and touches no LLM at all. See
+app/frozen.py for what counts as a change.
 """
 from __future__ import annotations
 
@@ -62,6 +68,51 @@ def _write_outputs(directory: str, state: dict) -> list[str]:
     return written
 
 
+def _report_frozen() -> int:
+    """Print what is in sql/ and whether it still matches the live database."""
+    from app import frozen
+
+    live = ""
+    note = ""
+    try:
+        from app.db.introspect import live_structure_fingerprint
+
+        live = live_structure_fingerprint()
+    except Exception as exc:  # noqa: BLE001 - the report is useful without the database
+        note = "Could not read the live schema (" + str(exc).split("\n")[0] + "), so nothing " \
+               "below can be judged current."
+
+    rows = frozen.describe(live)
+    print("Frozen SQL in " + frozen.SQL_DIR)
+    if live:
+        print("Live structural fingerprint: " + live[:16])
+    print("")
+    width = max((len(r["key"]) for r in rows), default=3)
+    for row in rows:
+        stamp = (row["frozen_at"] or "")[:19].replace("T", " ")
+        detail = ""
+        if row["state"] == "current":
+            detail = "frozen " + stamp + ", " + str(row["row_count"]) + " rows then"
+        elif row["state"] == "stale":
+            detail = "frozen " + stamp + " against schema " + (row["fingerprint"] or "?")[:16]
+        elif row["state"] == "hand-edited":
+            detail = "edited since it was frozen - no longer the verified text"
+        elif row["state"] == "unverified":
+            detail = "no manifest entry, so nothing records that it was ever verified"
+        elif row["state"] == "missing":
+            detail = "never frozen"
+        print("  " + row["key"].ljust(width) + "  " + row["state"].ljust(12) + "  " + detail)
+
+    if note:
+        print("\n" + note)
+    stale = [r["key"] for r in rows if r["state"] in ("stale", "missing")]
+    if stale:
+        print("\nThe next run will author: " + ", ".join(stale))
+    elif live:
+        print("\nEvery query is current - the next run costs no tokens and no agent time.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Detect well slippage and activity delay.")
     parser.add_argument("--refresh", action="store_true",
@@ -77,6 +128,10 @@ def main() -> int:
                         help="summarise recorded rejections and execution failures, then stop")
     parser.add_argument("--detect-only", action="store_true",
                         help="introspect and report what was detected, then stop")
+    parser.add_argument("--frozen", action="store_true",
+                        help="report the state of the frozen SQL in sql/, then stop")
+    parser.add_argument("--regenerate", action="store_true",
+                        help="re-author every query with the agents, ignoring sql/")
     args = parser.parse_args()
 
     # Before the database check: the corpus is a local file, and a report should be readable
@@ -86,6 +141,12 @@ def main() -> int:
 
         print(rework.report())
         return 0
+
+    # Also before it, for the same reason: which queries are frozen is a fact about sql/, and
+    # only judging them CURRENT needs the database. Without it they report as "unknown", which
+    # is the honest answer rather than a failure.
+    if args.frozen:
+        return _report_frozen()
 
     ok, message = ping()
     if not ok:
@@ -111,7 +172,7 @@ def main() -> int:
 
     from app.graph.build import build_graph
 
-    initial: dict = {"refresh_schema": args.refresh}
+    initial: dict = {"refresh_schema": args.refresh, "force_regenerate": args.regenerate}
     # --only narrows the Planner's worklist. The Planner still runs either way: the activity
     # query needs its task bindings and the slippage query needs its scenario bindings.
     if args.only:
@@ -142,6 +203,15 @@ def main() -> int:
             "\n[!] NOT approved by the independent review: " + ", ".join(unverified),
             file=sys.stderr,
         )
+
+    # Say which half of the pipeline actually ran. Without this the only visible difference
+    # between a 15-second reuse and a 200-second authoring run is the wall clock.
+    reused = list(state.get("reused_queries") or [])
+    authored = [k for k in results if k not in reused]
+    if reused:
+        print("reused from sql/: " + ", ".join(reused), file=sys.stderr)
+    if authored:
+        print("authored and frozen: " + ", ".join(authored), file=sys.stderr)
 
     if args.out:
         for path in _write_outputs(args.out, state):

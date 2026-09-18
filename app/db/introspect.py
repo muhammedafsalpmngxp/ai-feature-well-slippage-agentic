@@ -240,28 +240,74 @@ def _render(tables, pks, fks, dup_keys) -> str:
 # -- Fingerprint ---------------------------------------------------------------
 
 
-def _fingerprint(cur) -> str:
-    """Hash of everything that should invalidate the cache."""
-    parts: list[str] = [_RENDERER_VERSION]
-    # Identity: pointing .env at another database must not reuse this one's cache. The table
-    # filters are folded in for the same reason - narrowing INCLUDED_TABLES changes the rendered
-    # block without touching the database, so without this the cache would serve the old, wider
-    # schema forever and the setting would appear to do nothing.
-    parts.append(
-        "|".join(
-            [
-                settings.db_server,
-                settings.db_name,
-                ",".join(settings.allowed_schemas),
-                ",".join(sorted(settings.included_tables)),
-                ",".join(sorted(settings.excluded_tables)),
-            ]
-        )
+def _identity() -> str:
+    """What .env points at, and how much of it is in scope.
+
+    Pointing .env at another database must not reuse this one's work. The table filters are
+    folded in for the same reason - narrowing INCLUDED_TABLES changes what an agent is allowed to
+    see without touching the database, so without this the setting would appear to do nothing.
+    """
+    return "|".join(
+        [
+            settings.db_server,
+            settings.db_name,
+            ",".join(settings.allowed_schemas),
+            ",".join(sorted(settings.included_tables)),
+            ",".join(sorted(settings.excluded_tables)),
+        ]
     )
+
+
+def structure_fingerprint(cur) -> str:
+    """Hash of what decides whether an ALREADY-WRITTEN QUERY is still valid.
+
+    ⚠ DELIBERATELY NARROWER THAN _fingerprint BELOW, and the difference is the entire reason
+    frozen SQL is worth keeping (see app/frozen.py).
+
+    What is in: the database identity, the table scope, every column with its declared type, and
+    the constraints. Each of those can break a written query - a renamed column, a retyped join
+    key, a dropped foreign key that the query's join assumed.
+
+    What is OUT, and why:
+
+    * ROW COUNTS. A query written against a schema stays correct when rows are loaded. They are
+      in the cache key below because the value HINTS are sampled from live data, but keying
+      frozen SQL on them would discard every query on every ingest - in a database that loads
+      daily, nothing would ever be reused, which is the exact outcome freezing exists to avoid.
+    * THE RENDERER VERSION. It changes the text shown to the agents, not the validity of SQL
+      already written. Bumping it must rebuild the schema block without invalidating queries
+      that are still perfectly correct.
+    """
+    parts: list[str] = [_identity()]
     parts += [str(row) for row in _run(cur, _COLUMNS_SQL)]
     # Constraints do not appear in INFORMATION_SCHEMA.COLUMNS, so without this a dropped foreign
-    # key or a new CHECK would leave the hash - and the cache - untouched.
+    # key or a new CHECK would leave the hash untouched.
     parts += [str(row) for row in _run(cur, _CONSTRAINT_SQL)]
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def live_structure_fingerprint() -> str:
+    """The structural fingerprint, on a connection of its own.
+
+    For callers that have no cursor to hand - the API's drift check, and the CLI's report.
+    """
+    conn = get_connection()
+    try:
+        return structure_fingerprint(conn.cursor())
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _fingerprint(cur) -> str:
+    """Hash of everything that should invalidate the CACHED SCHEMA BLOCK AND VALUE HINTS.
+
+    Broader than the structural hash above: it also covers how the block is rendered, and how
+    much data the hints were sampled from.
+    """
+    parts: list[str] = [_RENDERER_VERSION, structure_fingerprint(cur)]
     # Row counts from catalogue statistics - one metadata read, no table scan. This is what makes
     # a rerun pick up newly LOADED DATA and not only structural change.
     try:
