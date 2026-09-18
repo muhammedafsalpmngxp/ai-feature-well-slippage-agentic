@@ -145,10 +145,15 @@ def sql(key: str):
         raise _fail(exc, status=404) from exc
 
 
-def _run_pipeline(refresh: bool) -> None:
+def _run_pipeline(refresh: bool, regenerate: bool) -> None:
     cmd = [sys.executable, "main.py", "--out", "out"]
     if refresh:
         cmd.append("--refresh")
+    if regenerate:
+        # The agents author every query again instead of reusing sql/. This is what "Re-run
+        # ANALYSIS" has to mean: a button that skipped the analysis and only re-executed
+        # yesterday's SQL was answering a different question from the one it was labelled with.
+        cmd.append("--regenerate")
     started = datetime.now(timezone.utc).isoformat()
     _run_state.update(running=True, started_at=started, finished_at=None, exit_code=None)
     try:
@@ -201,18 +206,28 @@ def _run_pipeline(refresh: bool) -> None:
 
 
 @app.post("/api/run")
-def run(refresh: bool = Query(False, description="also re-introspect the database")):
+def run(
+    refresh: bool = Query(False, description="also re-introspect the database"),
+    regenerate: bool = Query(
+        True,
+        description="re-author every query with the agents instead of reusing sql/ "
+                    "(the default: this endpoint exists to run the analysis, not to repeat it)",
+    ),
+):
     """Start a pipeline run in the background.
 
     Single-flight: a second request while one is in progress is rejected rather than queued. The
     run costs several minutes and real tokens, so a double-clicked button must not buy two.
+
+    `regenerate` defaults to TRUE. A scheduled refresh that only wants current figures should
+    pass `regenerate=false`, which reuses the frozen SQL and finishes in seconds.
     """
     if not _run_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A run is already in progress.")
     try:
         if _run_state["running"]:
             raise HTTPException(status_code=409, detail="A run is already in progress.")
-        threading.Thread(target=_run_pipeline, args=(refresh,), daemon=True).start()
+        threading.Thread(target=_run_pipeline, args=(refresh, regenerate), daemon=True).start()
         return {"started": True}
     finally:
         _run_lock.release()

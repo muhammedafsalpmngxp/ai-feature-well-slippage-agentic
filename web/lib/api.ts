@@ -87,6 +87,16 @@ export const api = {
     ).then((r) => r.tasks),
   brief: () => get<{ markdown: string }>("/api/brief").then((r) => r.markdown),
   sql: (key: string) => get<{ key: string; sql: string }>(`/api/sql/${encodeURIComponent(key)}`),
-  startRun: (refresh = false) =>
-    get<{ started: boolean }>(`/api/run?refresh=${refresh}`, { method: "POST" }),
+  /**
+   * Start a pipeline run.
+   *
+   * `regenerate` re-authors every query with the agents rather than reusing the frozen SQL —
+   * minutes and real tokens, against ~17 seconds for a reuse. It is the default because that is
+   * what the button says it does; pass false for a cheap refresh of the figures alone.
+   */
+  startRun: (refresh = false, regenerate = true) =>
+    get<{ started: boolean }>(
+      `/api/run?refresh=${refresh}&regenerate=${regenerate}`,
+      { method: "POST" },
+    ),
 };

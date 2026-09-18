@@ -122,7 +122,9 @@ export default function Dashboard() {
   async function startRun() {
     setStarting(true);
     try {
-      await api.startRun(false);
+      // regenerate: the agents author and verify every query again. "Re-run analysis" has to
+      // mean the analysis, not a re-execution of the SQL it produced last time.
+      await api.startRun(false, true);
       // The ONE place the schema check is asked for. At this moment the answer is worth its
       // cost: it says whether the run now starting will re-author the queries - minutes, and
       // tokens - or just re-execute the frozen ones.
@@ -173,6 +175,7 @@ export default function Dashboard() {
           <button
             onClick={startRun}
             disabled={running || starting}
+            title="Writes and verifies every query again with the agents. Takes a few minutes; the figures below stay on the last run until it finishes."
             className="h-10 rounded-lg bg-accent px-[18px] text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-strong disabled:opacity-50"
           >
             {running ? "Running…" : starting ? "Starting…" : "Re-run analysis"}
