@@ -125,6 +125,8 @@ export default function Dashboard() {
 
   const maxMilestone = Math.max(1, ...Array.from(stats.byMilestone.values()));
   const running = status?.run.running ?? false;
+  // The click counts as busy too: the first poll that confirms the run is seconds away.
+  const busy = running || starting;
 
   async function startRun() {
     setStarting(true);
@@ -191,93 +193,100 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <RunProgress status={status} starting={starting} startedLocally={startedLocally} />
+      {/* A re-run REPLACES the SQL every figure below is built from, so while it runs those
+          figures describe a state that is being thrown away. Showing them under a progress bar
+          invites reading them as current, so the run takes the page over instead. */}
+      {busy ? (
+        <RunProgress status={status} starting={starting} startedLocally={startedLocally} />
+      ) : (
+        <>
+          {error && <ErrorNote message={error} onRetry={() => void load()} />}
 
-      {error && <ErrorNote message={error} onRetry={() => void load()} />}
+          {/* Only reachable after starting a run, because that is the one call that asks for the
+              schema check. So this describes what the run is doing, rather than telling a reader to
+              re-run something they have just re-run. */}
+          {status?.schema_drifted && (
+            <div
+              role="status"
+              className="rounded-[10px] border border-warn/25 bg-warn-soft px-5 py-3.5 text-sm leading-relaxed text-warn"
+            >
+              <strong className="font-semibold">The database structure has changed</strong> since these
+              queries were written, so this run is re-writing and re-verifying them. That takes a few
+              minutes rather than a few seconds. The figures below describe the previous run until it
+              finishes.
+            </div>
+          )}
 
-      {/* Only reachable after starting a run, because that is the one call that asks for the
-          schema check. So this describes what the run is doing, rather than telling a reader to
-          re-run something they have just re-run. */}
-      {status?.schema_drifted && (
-        <div
-          role="status"
-          className="rounded-[10px] border border-warn/25 bg-warn-soft px-5 py-3.5 text-sm leading-relaxed text-warn"
-        >
-          <strong className="font-semibold">The database structure has changed</strong> since these
-          queries were written, so this run is re-writing and re-verifying them. That takes a few
-          minutes rather than a few seconds. The figures below describe the previous run until it
-          finishes.
-        </div>
+          <StatStrip>
+            <Stat
+              label="Slipped wells"
+              value={wells === null ? "—" : stats.total}
+              hint="Failed at least one milestone"
+            />
+            <Stat
+              label="Wells with delayed activity"
+              value={activity.length === 0 ? "—" : activity.length}
+              hint="At least one delayed activity code"
+            />
+            {/* Coloured only when there is actually an overrun - see the note on the detail page. */}
+            <Stat
+              label="Worst overrun"
+              value={wells === null ? "—" : formatVariance(stats.worst)}
+              tone={varianceTone(stats.worst) === "danger" ? "danger" : "neutral"}
+              hint="Days past any missed milestone deadline"
+            />
+            <Stat
+              label="Data-quality flags"
+              value={wells === null ? "—" : stats.dataQuality}
+              hint="Wells missing a date needed to judge"
+            />
+          </StatStrip>
+
+          <div className="grid gap-6 lg:grid-cols-3">
+            <Card
+              title="Wells failing each milestone"
+              subtitle="A well appears once for every milestone it failed, so these do not sum to the fleet"
+              className="lg:col-span-2"
+            >
+              <div className="space-y-3.5 px-5 py-[18px]">
+                {MILESTONES.map((m) => {
+                  const count = stats.byMilestone.get(m) ?? 0;
+                  return (
+                    <div key={m} className="flex items-center gap-3.5">
+                      <span className="w-24 shrink-0 text-right text-xs font-medium text-ink-2">
+                        {MILESTONE_LABEL[m]}
+                      </span>
+                      <div className="h-2 flex-1 overflow-hidden rounded-sm bg-muted-soft">
+                        <div
+                          className="h-full rounded-sm bg-accent"
+                          style={{ width: `${(count / maxMilestone) * 100}%` }}
+                        />
+                      </div>
+                      <span className="tnum w-7 shrink-0 text-right text-[13px] font-semibold">
+                        {count}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+
+            <Card title="Investigate a well">
+              <div className="px-5 py-[18px]">
+                <WellLookup knownWells={knownWells} />
+              </div>
+            </Card>
+          </div>
+
+          <Card title="Slipped wells" subtitle="Select a well to see its task-level delay">
+            {wells === null ? <Skeleton rows={8} /> : (
+              <WellsTable wells={wells} activityByWell={activityByWell} />
+            )}
+          </Card>
+
+          <SqlViewer status={status} />
+        </>
       )}
-
-      <StatStrip>
-        <Stat
-          label="Slipped wells"
-          value={wells === null ? "—" : stats.total}
-          hint="Failed at least one milestone"
-        />
-        <Stat
-          label="Wells with delayed activity"
-          value={activity.length === 0 ? "—" : activity.length}
-          hint="At least one delayed activity code"
-        />
-        {/* Coloured only when there is actually an overrun - see the note on the detail page. */}
-        <Stat
-          label="Worst overrun"
-          value={wells === null ? "—" : formatVariance(stats.worst)}
-          tone={varianceTone(stats.worst) === "danger" ? "danger" : "neutral"}
-          hint="Days past any missed milestone deadline"
-        />
-        <Stat
-          label="Data-quality flags"
-          value={wells === null ? "—" : stats.dataQuality}
-          hint="Wells missing a date needed to judge"
-        />
-      </StatStrip>
-
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card
-          title="Wells failing each milestone"
-          subtitle="A well appears once for every milestone it failed, so these do not sum to the fleet"
-          className="lg:col-span-2"
-        >
-          <div className="space-y-3.5 px-5 py-[18px]">
-            {MILESTONES.map((m) => {
-              const count = stats.byMilestone.get(m) ?? 0;
-              return (
-                <div key={m} className="flex items-center gap-3.5">
-                  <span className="w-24 shrink-0 text-right text-xs font-medium text-ink-2">
-                    {MILESTONE_LABEL[m]}
-                  </span>
-                  <div className="h-2 flex-1 overflow-hidden rounded-sm bg-muted-soft">
-                    <div
-                      className="h-full rounded-sm bg-accent"
-                      style={{ width: `${(count / maxMilestone) * 100}%` }}
-                    />
-                  </div>
-                  <span className="tnum w-7 shrink-0 text-right text-[13px] font-semibold">
-                    {count}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-
-        <Card title="Investigate a well">
-          <div className="px-5 py-[18px]">
-            <WellLookup knownWells={knownWells} />
-          </div>
-        </Card>
-      </div>
-
-      <Card title="Slipped wells" subtitle="Select a well to see its task-level delay">
-        {wells === null ? <Skeleton rows={8} /> : (
-          <WellsTable wells={wells} activityByWell={activityByWell} />
-        )}
-      </Card>
-
-      <SqlViewer status={status} />
     </div>
   );
 }

@@ -22,9 +22,9 @@
         "progress_percent"
       ],
       "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T10:52:00+00:00",
+      "frozen_at": "2026-09-18T11:40:09+00:00",
       "row_count": 88,
-      "sql_sha256": "b1fd31f9346ea7de8ed12e1aa7eeb0f72e2f5eea79c0190c477fdc6f76fcfe5d"
+      "sql_sha256": "ecbb83a9b0d8860113adf57bba1806526db7aa169b515733abda2c15db36d777"
     },
     "activity_summary": {
       "columns": [
@@ -32,9 +32,9 @@
         "delayed_activity_codes"
       ],
       "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T10:52:00+00:00",
-      "row_count": 184,
-      "sql_sha256": "42c0fa67eb692148593788570ec63d0d5cff56f649abcb12b9ed41250251bab8"
+      "frozen_at": "2026-09-18T11:40:09+00:00",
+      "row_count": 186,
+      "sql_sha256": "573442281bfc4bc6b9a41b9d19259a815c66bf23a3e73f9265dd3a819cf37d52"
     },
     "well_slippage": {
       "columns": [
@@ -58,9 +58,9 @@
         "well_slippage_status"
       ],
       "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T10:52:00+00:00",
+      "frozen_at": "2026-09-18T11:40:09+00:00",
       "row_count": 212,
-      "sql_sha256": "04f8712d5dc2824c37a33106c85b28810da19d37760e0c9ea59e9208edb1b2d3"
+      "sql_sha256": "a5e1bc0cb3dd204b6f3c4f42ab51d6850d9419d105321700cce08904ef9c9696"
     }
   },
   "version": 1

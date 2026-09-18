@@ -248,6 +248,59 @@ select:focus {
   animation: indeterminate 1.8s ease-in-out infinite;
 }
 
+/* The hero mark: a single arc sweeping a ring. A conic gradient masked to a ring edge, rather
+   than a border-trick spinner, so the trail fades instead of ending in a hard stop. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ring-spin {
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg,
+    color-mix(in srgb, var(--color-accent) 25%, transparent) 140deg,
+    var(--color-accent) 320deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  animation: spin 1.1s linear infinite;
+}
+
+/* A slow halo behind the mark, so the centre of the screen is alive without anything darting
+   about. Scale only - no opacity flash, which reads as a glitch at this size. */
+@keyframes halo {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.12;
+  }
+}
+.halo {
+  animation: halo 2.8s ease-in-out infinite;
+}
+
+/* Rows arrive rather than appear. Short and small: a long slide on a list that updates every
+   two seconds turns into visual noise. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 260ms ease-out both;
+}
+
 @keyframes pulse-dot {
   0%,
   100% {
@@ -263,12 +316,24 @@ select:focus {
   animation: pulse-dot 1.3s ease-in-out infinite;
 }
 
-/* Under reduced motion the animations below are stopped dead, which would leave the bar frozen
-   off-screen and reading as broken. A calm static fill says "working" without moving. */
+/* Under reduced motion the animations above are stopped dead, which would leave the bar frozen
+   off-screen and the spinner a lopsided arc - both reading as broken rather than as calm. Each
+   gets a resting state that still says "working". */
 @media (prefers-reduced-motion: reduce) {
   .bar-indeterminate::after {
     transform: none;
     opacity: 0.55;
+  }
+  .ring-spin {
+    background: conic-gradient(
+      from 0deg,
+      var(--color-accent) 0deg,
+      var(--color-accent) 360deg
+    );
+    opacity: 0.35;
+  }
+  .halo {
+    opacity: 0.18;
   }
 }
 

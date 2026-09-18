@@ -4,57 +4,51 @@ import { useEffect, useState } from "react";
 import type { PipelineStatus } from "@/lib/types";
 
 /**
- * What a re-run is doing, while it does it.
+ * The screen a re-run shows while it runs.
  *
- * A re-run writes and verifies every query again — about a minute and a half — and until this
- * existed the only signal was a disabled button reading "Running…". That is indistinguishable
- * from a hung request, and the figures on the page stayed put with nothing to say they were
- * about to be replaced.
+ * A re-run writes and verifies every query again — a minute or two — and replaces the SQL the
+ * whole dashboard is built on. So it TAKES OVER: while it runs, the figures beneath it describe
+ * a state that is being thrown away, and showing them under a progress bar invites reading them
+ * as current.
  *
- * ⚠ THE STAGES ARE READ FROM THE PIPELINE'S OWN LOG, not simulated on a timer. The API streams
- * the subprocess's output and keeps the last ~40 lines in its run state; this component matches
- * the same lines a person would read in the terminal. A fake progress bar that advances on a
- * timer is a lie whenever the run stalls, and a stalled run is exactly when someone is watching.
+ * ⚠ THE STAGES ARE READ FROM THE PIPELINE'S OWN LOG, never simulated on a timer. The API streams
+ * the subprocess's output and keeps the last ~40 lines in its run state; this matches the same
+ * lines a person would read in the terminal. A bar that advances on a timer is most confident
+ * exactly when a run has stalled, which is precisely when someone is watching it.
  */
 
-type StageState = "pending" | "active" | "done";
-
-const QUERY_LABEL: Record<string, string> = {
-  well_slippage: "Well slippage",
-  activity_summary: "Delayed activity count",
-  activity_delay: "Activity delay detail",
-};
+type StepState = "pending" | "active" | "done";
 
 type Stage = {
   key: string;
   label: string;
   detail: string;
-  /** Lines that mean this stage has BEGUN, and ones that mean it has finished. */
+  /** Lines meaning this stage has BEGUN, and ones meaning it has finished. */
   starts: RegExp;
   ends?: RegExp;
 };
 
-// In pipeline order. `starts` on a later stage implies every earlier one is done, which is what
-// keeps this correct when early lines have scrolled out of the rolling window.
+// In pipeline order. A later stage starting implies every earlier one is done, which is what
+// keeps this correct once early lines scroll out of the rolling window.
 const STAGES: Stage[] = [
   {
     key: "detect",
     label: "Reading the database",
-    detail: "Schema, types and real lookup values",
+    detail: "Schema, column types and real lookup values",
     starts: /db: Connected|introspect:/,
     ends: /detect: done/,
   },
   {
     key: "plan",
     label: "Binding columns",
-    detail: "Mapping each milestone onto a real column",
+    detail: "Mapping every milestone onto a real column of this database",
     starts: /llm {2}planner|frozen: --regenerate/,
     ends: /plan: \d+\/\d+ milestone/,
   },
   {
     key: "author",
     label: "Writing and verifying SQL",
-    detail: "Three queries at once, each independently reviewed",
+    detail: "Three queries at once, each reviewed by an independent verifier",
     starts: /parallel: starting|llm {2}sql_author/,
     ends: /parallel: all \d+ queries done/,
   },
@@ -74,10 +68,18 @@ const STAGES: Stage[] = [
   },
 ];
 
-/** `[well_slippage] DONE in 24.7s - 212 rows, verified=True` and its REUSED twin. */
-const QUERY_DONE = /\[(\w+)\]\s+(DONE|REUSED) in ([\d.]+)s - (\d+) rows(?:, verified=(\w+))?/;
+const QUERIES = [
+  { key: "well_slippage", label: "Well slippage" },
+  { key: "activity_summary", label: "Delayed activity count" },
+  { key: "activity_delay", label: "Activity delay detail" },
+] as const;
 
-type QueryOutcome = { key: string; seconds: string; rows: string; verified: boolean };
+/** `[well_slippage] DONE in 24.7s - 212 rows, verified=True`, and its REUSED twin. */
+const QUERY_DONE = /\[(\w+)\]\s+(?:DONE|REUSED) in ([\d.]+)s - (\d+) rows(?:, verified=(\w+))?/;
+/** `verify[activity_summary]: rejected - <reason>` — a rewrite is under way, worth showing. */
+const QUERY_REJECTED = /verify\[(\w+)\]: rejected/;
+
+type Outcome = { key: string; seconds: string; rows: string; verified: boolean };
 
 function readProgress(tail: string[]) {
   const text = tail.join("\n");
@@ -92,21 +94,29 @@ function readProgress(tail: string[]) {
     }
   });
 
-  const states: StageState[] = STAGES.map((stage, i) => {
+  const states: StepState[] = STAGES.map((stage, i) => {
     if (ended.has(stage.key)) return "done";
     if (i < furthest) return "done";
     if (i === furthest) return "active";
     return "pending";
   });
 
-  const queries: QueryOutcome[] = [];
+  const outcomes: Outcome[] = [];
+  const rewriting = new Set<string>();
   for (const line of tail) {
-    const m = QUERY_DONE.exec(line);
-    if (m && !queries.some((q) => q.key === m[1])) {
-      queries.push({ key: m[1], seconds: m[3], rows: m[4], verified: m[5] !== "False" });
+    const done = QUERY_DONE.exec(line);
+    if (done && !outcomes.some((o) => o.key === done[1])) {
+      outcomes.push({
+        key: done[1],
+        seconds: done[2],
+        rows: done[3],
+        verified: done[4] !== "False",
+      });
     }
+    const rejected = QUERY_REJECTED.exec(line);
+    if (rejected) rewriting.add(rejected[1]);
   }
-  return { states, queries };
+  return { states, outcomes, rewriting };
 }
 
 function Elapsed({ startedAt }: { startedAt: string | null }) {
@@ -119,19 +129,22 @@ function Elapsed({ startedAt }: { startedAt: string | null }) {
   const started = new Date(startedAt).getTime();
   if (Number.isNaN(started)) return null;
   const secs = Math.max(0, Math.round((now - started) / 1000));
-  const shown = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
-  return <span className="tnum">{shown}</span>;
+  return (
+    <span className="tnum">
+      {secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`}
+    </span>
+  );
 }
 
-function Indicator({ state }: { state: StageState }) {
+function StepMark({ state }: { state: StepState }) {
   if (state === "done") {
     return (
-      <span aria-hidden className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-good">
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+      <span className="grid h-[22px] w-[22px] place-items-center rounded-full bg-good">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
           <path
-            d="M2 5.2l2 2L8 3"
+            d="M2.5 6.2l2.4 2.4L9.5 4"
             stroke="var(--color-surface)"
-            strokeWidth="1.6"
+            strokeWidth="1.8"
             strokeLinecap="round"
             strokeLinejoin="round"
           />
@@ -141,16 +154,66 @@ function Indicator({ state }: { state: StageState }) {
   }
   if (state === "active") {
     return (
-      <span aria-hidden className="grid h-4 w-4 shrink-0 place-items-center">
-        <span className="dot-active h-2.5 w-2.5 rounded-full bg-accent" />
+      <span className="relative grid h-[22px] w-[22px] place-items-center">
+        <span className="halo absolute inset-0 rounded-full bg-accent" aria-hidden />
+        <span className="ring-spin absolute inset-0 rounded-full" aria-hidden />
+        <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
       </span>
     );
   }
   return (
     <span
       aria-hidden
-      className="h-4 w-4 shrink-0 rounded-full border border-line-strong"
-    />
+      className="grid h-[22px] w-[22px] place-items-center rounded-full border border-line-strong"
+    >
+      <span className="h-1 w-1 rounded-full bg-line-strong" />
+    </span>
+  );
+}
+
+function QueryLane({
+  label,
+  state,
+  outcome,
+  rewriting,
+}: {
+  label: string;
+  state: StepState;
+  outcome?: Outcome;
+  rewriting: boolean;
+}) {
+  return (
+    <li className="flex items-center gap-2.5 text-xs">
+      <span
+        aria-hidden
+        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+          state === "done"
+            ? outcome?.verified === false
+              ? "bg-warn"
+              : "bg-good"
+            : state === "active"
+              ? "dot-active bg-accent"
+              : "bg-line-strong"
+        }`}
+      />
+      <span className={state === "pending" ? "text-ink-3" : "text-ink-2"}>{label}</span>
+      <span className="ml-auto tnum text-ink-3">
+        {outcome ? (
+          <>
+            {Number(outcome.rows).toLocaleString("en-GB")} rows · {outcome.seconds}s
+            {outcome.verified === false && (
+              <span className="ml-1.5 text-warn" title="The verifier did not approve this query">
+                not approved
+              </span>
+            )}
+          </>
+        ) : state === "active" ? (
+          <span className="text-ink-3">{rewriting ? "rewriting…" : "writing…"}</span>
+        ) : (
+          ""
+        )}
+      </span>
+    </li>
   );
 }
 
@@ -163,130 +226,169 @@ export function RunProgress({
   /**
    * True between the click and the first poll that reports the run.
    *
-   * Without it the panel took ~13 seconds to appear, because startRun asks for the schema check
-   * before anything re-renders — so the one moment the user most needs feedback was the one
-   * moment there was none. The panel is what the button promises; it should not wait on an
-   * unrelated request.
+   * Without it the screen took ~13 seconds to appear, because startRun asks for the schema check
+   * first — so the one moment feedback matters most was the one moment there was none.
    */
   starting?: boolean;
-  /** Click time, so the timer runs from the click rather than from the API's first report. */
+  /** Click time, so the timer runs from the click rather than the API's first report. */
   startedLocally?: string | null;
 }) {
   const run = status?.run;
   const running = run?.running ?? false;
-  // Same stale-status trap as the tail below: until the run is confirmed, `run.started_at` is
-  // the PREVIOUS run's, which rendered a fresh click as "2m 12s elapsed". The click time is the
-  // only true answer in that window.
+  // Until the run is CONFIRMED, `status` still describes the previous one — whose started_at
+  // rendered a fresh click as "2m 12s elapsed" and whose tail showed every stage already done.
   const startedAt = running ? (run?.started_at ?? startedLocally) : startedLocally;
   const tail = run?.tail;
 
   /**
-   * Query outcomes ACCUMULATE, because the log tail is a rolling 40-line window.
+   * Outcomes ACCUMULATE, because the tail is a rolling 40-line window.
    *
-   * Observed live: "Well slippage · 212 rows · 23.8s" appeared, then disappeared a poll later
-   * when its line scrolled out from under the other two queries' output. A finished query
-   * un-finishing itself reads as a fault in the run, when it is only a fault in the window.
-   * Reset when a new run starts, keyed on started_at.
+   * Observed live: a finished query's line scrolled out from under the other two and its result
+   * vanished from the screen. A finished query un-finishing itself reads as a fault in the run,
+   * when it is only a fault in the window.
    */
-  const [seen, setSeen] = useState<QueryOutcome[]>([]);
+  const [seen, setSeen] = useState<Outcome[]>([]);
   const [seenFor, setSeenFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (!running) return;
+    const fresh = readProgress(tail ?? []).outcomes;
     if (seenFor !== startedAt) {
       setSeenFor(startedAt);
-      setSeen(readProgress(tail ?? []).queries);
+      setSeen(fresh);
       return;
     }
-    const fresh = readProgress(tail ?? []).queries;
     setSeen((prev) => {
       const merged = [...prev];
-      for (const q of fresh) if (!merged.some((p) => p.key === q.key)) merged.push(q);
+      for (const o of fresh) if (!merged.some((p) => p.key === o.key)) merged.push(o);
       return merged.length === prev.length ? prev : merged;
     });
   }, [running, startedAt, tail, seenFor]);
 
   if (!running && !starting) return null;
 
-  // ⚠ IGNORE THE TAIL UNTIL THE RUN IS CONFIRMED RUNNING. Between the click and the first poll,
-  // `status` still holds the PREVIOUS run — whose tail ends at "brief written", so every stage
-  // would render as already complete before the new run had read a single row. Starting from
-  // nothing and marking only the first stage active is the honest reading of "we have just asked
-  // for this and heard nothing back yet".
-  const states = running
-    ? readProgress(tail ?? []).states
-    : STAGES.map((_, i): StageState => (i === 0 ? "active" : "pending"));
-  const queries = running ? seen : [];
+  const live = running ? readProgress(tail ?? []) : null;
+  const states =
+    live?.states ?? STAGES.map((_, i): StepState => (i === 0 ? "active" : "pending"));
+  const outcomes = running ? seen : [];
+  const rewriting = live?.rewriting ?? new Set<string>();
   const activeIndex = states.indexOf("active");
+  const authorIndex = STAGES.findIndex((s) => s.key === "author");
+  const authorState = states[authorIndex];
+
+  const doneCount = states.filter((s) => s === "done").length;
 
   return (
     <section
       role="status"
       aria-live="polite"
-      className="overflow-hidden rounded-[10px] border border-accent/25 bg-accent-soft"
+      aria-busy="true"
+      className="flex min-h-[62vh] items-center justify-center py-10"
     >
-      {/* Indeterminate, because the pipeline cannot say what fraction is left: the agents may
-          rewrite a query two or three times. A bar claiming 60% would be invented. */}
-      <div className="bar-indeterminate relative h-1 w-full overflow-hidden bg-accent/15" />
+      <div className="w-full max-w-[520px]">
+        {/* Hero */}
+        <div className="flex flex-col items-center text-center">
+          <span className="relative grid h-14 w-14 place-items-center">
+            <span className="halo absolute inset-0 rounded-full bg-accent" aria-hidden />
+            <span className="ring-spin absolute inset-0 rounded-full" aria-hidden />
+            <svg width="20" height="20" viewBox="0 0 14 14" fill="none" aria-hidden>
+              <path
+                d="M2 12V6M7 12V2M12 12V9"
+                stroke="var(--color-accent)"
+                strokeWidth="1.7"
+                strokeLinecap="round"
+              />
+            </svg>
+          </span>
 
-      <div className="space-y-4 px-5 py-4">
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <h2 className="display text-sm font-semibold text-ink">Re-running the analysis</h2>
-          <p className="text-xs text-ink-2">
-            Writing and verifying every query again · <Elapsed startedAt={startedAt} />
+          <h2 className="display mt-5 text-lg font-semibold text-ink">
+            Re-running the analysis
+          </h2>
+          <p className="mt-1.5 max-w-[420px] text-sm leading-relaxed text-ink-2">
+            The agents are writing and verifying every query from scratch. This usually takes a
+            minute or two.
+          </p>
+          <p className="mt-3 flex items-center gap-2 text-xs text-ink-3">
+            <span className="tnum">
+              {doneCount} of {STAGES.length} steps
+            </span>
+            <span aria-hidden>·</span>
+            <Elapsed startedAt={startedAt} />
           </p>
         </div>
 
-        <ol className="space-y-2.5">
-          {STAGES.map((stage, i) => (
-            <li key={stage.key} className="flex items-start gap-3">
-              <span className="mt-0.5">
-                <Indicator state={states[i]} />
-              </span>
-              <div className="min-w-0">
-                <p
-                  className={`text-[13px] ${
-                    states[i] === "pending"
-                      ? "text-ink-3"
-                      : states[i] === "active"
-                        ? "font-semibold text-ink"
-                        : "text-ink-2"
-                  }`}
-                >
-                  {stage.label}
-                </p>
-                {i === activeIndex && (
-                  <p className="mt-0.5 text-xs text-ink-3">{stage.detail}</p>
-                )}
+        {/* Stepper */}
+        <div className="mt-8 overflow-hidden rounded-[10px] border border-line bg-surface">
+          <div className="bar-indeterminate relative h-0.5 w-full overflow-hidden bg-accent/15" />
+          <ol className="space-y-0 px-5 py-2">
+            {STAGES.map((stage, i) => {
+              const state = states[i];
+              const last = i === STAGES.length - 1;
+              return (
+                <li key={stage.key} className="flex gap-3.5">
+                  {/* Rail: mark plus the connector to the next step. */}
+                  <div className="flex flex-col items-center">
+                    <span className="py-3">
+                      <StepMark state={state} />
+                    </span>
+                    {!last && (
+                      <span
+                        aria-hidden
+                        className={`w-px flex-1 ${state === "done" ? "bg-good/40" : "bg-line"}`}
+                      />
+                    )}
+                  </div>
 
-                {/* Per-query outcomes, under the stage that produces them. */}
-                {stage.key === "author" && queries.length > 0 && (
-                  <ul className="mt-1.5 flex flex-wrap gap-1.5">
-                    {queries.map((q) => (
-                      <li
-                        key={q.key}
-                        className={`inline-flex h-[22px] items-center rounded-[5px] px-2 text-xs font-medium ${
-                          q.verified ? "bg-good-soft text-good" : "bg-warn-soft text-warn"
-                        }`}
-                        title={
-                          q.verified
-                            ? "Written, executed and approved by the independent verifier"
-                            : "Produced rows, but the verifier did not approve it"
-                        }
-                      >
-                        {QUERY_LABEL[q.key] ?? q.key} · {q.rows} rows · {q.seconds}s
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </li>
-          ))}
-        </ol>
+                  <div className={`min-w-0 flex-1 py-3 ${last ? "" : "pb-4"}`}>
+                    <p
+                      className={`text-[13px] leading-[22px] ${
+                        state === "pending"
+                          ? "text-ink-3"
+                          : state === "active"
+                            ? "font-semibold text-ink"
+                            : "text-ink-2"
+                      }`}
+                    >
+                      {stage.label}
+                    </p>
 
-        <p className="border-t border-accent/15 pt-3 text-xs leading-relaxed text-ink-3">
-          The figures below are from the previous run and will update when this finishes. You can
-          keep using the page meanwhile.
+                    {i === activeIndex && (
+                      <p className="rise mt-1 text-xs leading-relaxed text-ink-3">
+                        {stage.detail}
+                      </p>
+                    )}
+
+                    {/* The three queries, as lanes under the stage that produces them. Shown
+                        from the moment that stage begins, so the reader sees what is being
+                        worked on rather than only what has finished. */}
+                    {stage.key === "author" && authorState !== "pending" && (
+                      <ul className="rise mt-2.5 space-y-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+                        {QUERIES.map((q) => {
+                          const outcome = outcomes.find((o) => o.key === q.key);
+                          return (
+                            <QueryLane
+                              key={q.key}
+                              label={q.label}
+                              state={
+                                outcome ? "done" : authorState === "active" ? "active" : "pending"
+                              }
+                              outcome={outcome}
+                              rewriting={rewriting.has(q.key)}
+                            />
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+
+        <p className="mt-5 text-center text-xs leading-relaxed text-ink-3">
+          The dashboard returns as soon as this finishes. Nothing below is hidden for long — the
+          figures it showed are about to be replaced by these.
         </p>
       </div>
     </section>
