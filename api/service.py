@@ -248,26 +248,50 @@ def live_fingerprint() -> str:
     """
 
     def read() -> str:
+        from app.config import settings
         from app.db.introspect import live_structure_fingerprint
 
-        return live_structure_fingerprint()
+        try:
+            return live_structure_fingerprint(timeout=settings.status_fingerprint_timeout)
+        except Exception as exc:  # noqa: BLE001 - a status read must never fail the dashboard
+            # ⚠ CAUGHT INSIDE THE PRODUCER SO THE FAILURE IS CACHED TOO.
+            #
+            # Letting it escape meant nothing was stored, so every subsequent request re-ran the
+            # catalogue read and paid the timeout again. With a slow catalogue that turned one
+            # slow read into every /api/status call blocking, for as long as the condition
+            # lasted. A failure is an answer - "unknown" - and is worth remembering for the same
+            # 60 seconds as a success.
+            log.warning("status: could not read the live schema fingerprint (%s)", exc)
+            return ""
 
-    try:
-        return _cached("live_fingerprint", read)
-    except Exception as exc:  # noqa: BLE001 - a status read must never fail the dashboard
-        log.warning("status: could not read the live schema fingerprint (%s)", exc)
-        return ""
+    return _cached("live_fingerprint", read)
 
 
-def status() -> dict:
-    """What exists on disk, and how old it is - so a stale dashboard is visible."""
+def status(check_schema: bool = False) -> dict:
+    """What exists on disk, and how old it is - so a stale dashboard is visible.
+
+    `check_schema` decides whether this read touches the database at all.
+
+    ⚠ IT DEFAULTS TO FALSE, AND EVERYTHING ELSE HERE IS PURE FILESYSTEM.
+
+    The drift check is the only part that needs a live catalogue read, and that read is the one
+    expensive thing in this whole module - INFORMATION_SCHEMA on a database with many objects can
+    take minutes. Doing it on every status request meant every dashboard mount paid for a banner
+    that is almost always hidden. It is now asked for explicitly, by the one action where the
+    answer changes what happens next: starting a run.
+    """
     out: dict[str, Any] = {"out_dir": OUT_DIR, "sql_dir": frozen.SQL_DIR, "queries": {}}
+
+    # Whether a check was even attempted, so a reader can tell "we did not look" from "we looked
+    # and could not tell". Both leave schema_drifted as null, and they mean different things.
+    out["schema_checked"] = bool(check_schema)
     # True only when a re-run would actually author new SQL - see schema_drifted. Ordinary data
-    # loading no longer flips it.
-    out["schema_drifted"] = schema_drifted()
-    # Per-query freeze state: current | stale | hand-edited | unverified | missing. This is what
-    # tells a reader whether the next run costs tokens, and whether what ran is what was approved.
-    out["frozen"] = {row["key"]: row for row in frozen.describe(live_fingerprint())}
+    # loading does not flip it. Null when unchecked, or when the check could not run.
+    out["schema_drifted"] = schema_drifted() if check_schema else None
+    # Per-query freeze state. Without a live fingerprint the states that need no database still
+    # come through - hand-edited, unverified, missing - and the rest report "unknown".
+    fingerprint = live_fingerprint() if check_schema else ""
+    out["frozen"] = {row["key"]: row for row in frozen.describe(fingerprint)}
     newest = 0.0
     for spec in queries.QUERIES:
         path = sql_path(spec.key)

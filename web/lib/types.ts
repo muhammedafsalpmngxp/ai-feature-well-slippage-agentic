@@ -74,10 +74,32 @@ export interface PipelineStatus {
   last_run: string | null;
   age_hours: number | null;
   /**
-   * True when the live database no longer matches what these queries were built against.
-   * `null` means the check could not run — which must be shown as unknown, never as fine.
+   * True when the live database no longer matches what these queries were built against, i.e.
+   * a run would re-write them rather than just re-execute them.
+   *
+   * `null` means no answer, for either of two reasons — and `schema_checked` is what separates
+   * them. Never shown as fine either way.
    */
   schema_drifted: boolean | null;
+  /**
+   * Whether the schema check was attempted at all. False on an ordinary status read: the check
+   * needs a database catalogue read, which is slow, so it is only asked for when a run starts.
+   */
+  schema_checked: boolean;
+  /** Per-query freeze state, from `sql/`. Filesystem facts; `state` needs the check to be exact. */
+  frozen?: Record<
+    string,
+    {
+      key: string;
+      label: string;
+      state: "current" | "stale" | "hand-edited" | "unverified" | "missing" | "unknown";
+      frozen_at: string | null;
+      fingerprint: string | null;
+      columns: string[];
+      row_count: number;
+      hand_edited: boolean;
+    }
+  >;
   queries: Record<
     string,
     { label: string; available: boolean; needs_well_id: boolean; generated_at: string | null }

@@ -286,13 +286,26 @@ def structure_fingerprint(cur) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
-def live_structure_fingerprint() -> str:
+def live_structure_fingerprint(timeout: int | None = None) -> str:
     """The structural fingerprint, on a connection of its own.
 
     For callers that have no cursor to hand - the API's drift check, and the CLI's report.
+
+    `timeout` caps the catalogue read in seconds. It exists because the two callers want
+    opposite things from a slow catalogue:
+
+    * THE PIPELINE needs the answer. Failing to read it means nothing can be reused, which costs
+      a full re-authoring run - so it waits the full query_timeout rather than pay that.
+    * THE API's drift check is decoration. It must never hold the dashboard, so it passes a few
+      seconds and treats a timeout as "unknown", which is what the return value already means.
+
+    INFORMATION_SCHEMA reads are not always cheap: on a database with many objects, and a login
+    whose metadata visibility has to be filtered per object, they can take minutes.
     """
     conn = get_connection()
     try:
+        if timeout is not None:
+            conn.timeout = timeout
         return structure_fingerprint(conn.cursor())
     finally:
         try:

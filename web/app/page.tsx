@@ -25,18 +25,34 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     setError(null);
+
+    // ⚠ STATUS IS DELIBERATELY NOT AWAITED WITH THE OTHERS.
+    //
+    // It used to be, in one Promise.allSettled of all three - and allSettled waits for the
+    // SLOWEST. /api/status runs a live catalogue read for its drift check, which on a database
+    // with many objects can take minutes, so the well table sat behind a skeleton waiting on a
+    // check that has no bearing on a single figure in it. Coming back from a well took as long
+    // as that read, every time.
+    //
+    // The table is the page; status is decoration - how old the run is, the drift banner, the
+    // SQL viewer's metadata. So the page renders as soon as the data lands and status fills in
+    // late, or never, without blocking anything.
+    //
+    // NO SCHEMA CHECK HERE. Mounting a page is not a reason to read the database catalogue: the
+    // check is slow, and its answer only matters when you are about to start a run. That one
+    // call asks for it (see startRun).
+    void api
+      .status()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+
     try {
       // Settled, not all: the activity summary is a bonus column on this page, so its absence
       // must not blank the well list, which is the page's actual subject.
-      const [w, a, s] = await Promise.allSettled([
-        api.wells(),
-        api.activitySummary(),
-        api.status(),
-      ]);
+      const [w, a] = await Promise.allSettled([api.wells(), api.activitySummary()]);
       if (w.status === "rejected") throw w.reason;
       setWells(w.value);
       setActivity(a.status === "fulfilled" ? a.value : []);
-      setStatus(s.status === "fulfilled" ? s.value : null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong loading the data.");
       setWells([]);
@@ -105,7 +121,10 @@ export default function Dashboard() {
     setStarting(true);
     try {
       await api.startRun(false);
-      setStatus(await api.status());
+      // The ONE place the schema check is asked for. At this moment the answer is worth its
+      // cost: it says whether the run now starting will re-author the queries - minutes, and
+      // tokens - or just re-execute the frozen ones.
+      setStatus(await api.status(true));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not start a run.");
     } finally {
@@ -161,14 +180,18 @@ export default function Dashboard() {
 
       {error && <ErrorNote message={error} onRetry={() => void load()} />}
 
+      {/* Only reachable after starting a run, because that is the one call that asks for the
+          schema check. So this describes what the run is doing, rather than telling a reader to
+          re-run something they have just re-run. */}
       {status?.schema_drifted && (
         <div
           role="status"
           className="rounded-[10px] border border-warn/25 bg-warn-soft px-5 py-3.5 text-sm leading-relaxed text-warn"
         >
-          <strong className="font-semibold">The database has changed</strong> since these queries
-          were generated. The figures below still describe the last verified run — re-run the
-          analysis to bring them current.
+          <strong className="font-semibold">The database structure has changed</strong> since these
+          queries were written, so this run is re-writing and re-verifying them. That takes a few
+          minutes rather than a few seconds. The figures below describe the previous run until it
+          finishes.
         </div>
       )}
 

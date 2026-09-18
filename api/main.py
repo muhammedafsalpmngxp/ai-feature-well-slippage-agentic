@@ -75,9 +75,19 @@ def health():
 
 
 @app.get("/api/status")
-def status():
-    """What the pipeline has produced, and how old it is."""
-    return {**service.status(), "run": _run_state}
+def status(
+    check_schema: bool = Query(
+        False,
+        description="also compare the live schema against the frozen queries (a catalogue "
+                    "read; off by default because it is the only slow part of this response)",
+    ),
+):
+    """What the pipeline has produced, and how old it is.
+
+    Cheap and filesystem-only unless `check_schema` is set. The dashboard sets it on one action:
+    starting a run, where the answer says whether that run will re-author or just re-execute.
+    """
+    return {**service.status(check_schema=check_schema), "run": _run_state}
 
 
 @app.get("/api/wells")

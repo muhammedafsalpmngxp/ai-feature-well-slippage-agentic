@@ -21,11 +21,32 @@ export class ApiError extends Error {
   }
 }
 
-async function get<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * A request that never returns is worse than one that fails: the UI has no way to tell the
+ * difference between "still working" and "will never answer", so it waits forever behind a
+ * skeleton. Every call gets a ceiling; slow endpoints get their own.
+ */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
+type Options = RequestInit & { timeoutMs?: number };
+
+async function get<T>(path: string, init?: Options): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init ?? {};
   let response: Response;
   try {
-    response = await fetch(path, { cache: "no-store", ...init });
-  } catch {
+    // `rest` is spread last so a caller-supplied signal still wins.
+    response = await fetch(path, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+      ...rest,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new ApiError(
+        `The API did not respond within ${Math.round(timeoutMs / 1000)}s.`,
+        0,
+      );
+    }
     // A fetch rejection is a connection failure, never an HTTP status. Saying "the API is not
     // reachable" points at the actual fix; "failed to fetch" points at nothing.
     throw new ApiError("Cannot reach the API. Is the FastAPI service running?", 0);
@@ -44,7 +65,19 @@ async function get<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  status: () => get<PipelineStatus>("/api/status"),
+  /**
+   * Pipeline status. Decoration, and nothing waits for it, so it gets a short leash: a status
+   * read still going after ten seconds will not arrive in time to be useful.
+   *
+   * `checkSchema` is what makes the API compare the live schema against the frozen queries, and
+   * it is the only slow part of that response — a catalogue read. Left off, this is pure
+   * filesystem. Pass it only where the answer changes what happens next.
+   */
+  status: (checkSchema = false) =>
+    get<PipelineStatus>(`/api/status${checkSchema ? "?check_schema=true" : ""}`, {
+      // The check has its own budget server-side; allow for it before giving up here.
+      timeoutMs: checkSchema ? 20_000 : 10_000,
+    }),
   wells: () => get<{ wells: WellRow[] }>("/api/wells").then((r) => r.wells),
   activitySummary: () =>
     get<{ wells: ActivitySummaryRow[] }>("/api/activity-summary").then((r) => r.wells),

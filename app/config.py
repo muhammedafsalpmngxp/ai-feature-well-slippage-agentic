@@ -51,6 +51,14 @@ class Settings:
         default_factory=lambda: _first("DB_TRUST_SERVER_CERTIFICATE", "DB_TRUST_CERT", default="yes")
     )
     query_timeout: int = field(default_factory=lambda: _get_int("QUERY_TIMEOUT", 120))
+    # Budget for the ADVISORY catalogue read behind /api/status's drift check. Much shorter than
+    # query_timeout on purpose: that 120s is sized for a real analytical query, and applying it
+    # to a decorative check let one slow catalogue read hold the whole dashboard behind a
+    # skeleton for two minutes. A drift check that cannot answer in a few seconds should report
+    # "unknown" and get out of the way - the figures on the page do not depend on it.
+    status_fingerprint_timeout: int = field(
+        default_factory=lambda: _get_int("STATUS_FINGERPRINT_TIMEOUT", 8)
+    )
 
     # ── LLM ─────────────────────────────────────────────────────────────────────
     openai_api_key: str = field(default_factory=lambda: _get("OPENAI_API_KEY"))
