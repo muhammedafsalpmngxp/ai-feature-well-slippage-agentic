@@ -4,7 +4,7 @@
 -- only when the database's structural fingerprint changes; a data load does not
 -- invalidate it. To force a rewrite: python main.py --regenerate
 --
--- Frozen at:  2026-09-18T10:17:38+00:00
+-- Frozen at:  2026-09-18T10:52:00+00:00
 -- Schema:     c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f
 -- Rows then:  88
 -- Contract:   well_id, task_code, action_on, activity_id, activity_code, wbs, crew_code, 
@@ -19,18 +19,17 @@
 WITH well_data AS
 (
     SELECT
-        w.well_id,
-        w.eng_completion_date
+        w.well_id
     FROM well.well_master AS w
-    WHERE CONVERT(varchar(50), w.well_id) = CONVERT(varchar(50), ?)
-      AND w.eng_completion_date IS NULL
+    WHERE w.eng_completion_date IS NULL
+      AND CONVERT(varchar(50), w.well_id) = CONVERT(varchar(50), ?)
 ),
 task_ranked AS
 (
     SELECT
         t.id,
         t.ActionOn,
-        t.task_code,
+        LTRIM(RTRIM(t.task_code)) AS task_code,
         t.target_start,
         t.target_end,
         t.actual_start,
@@ -47,191 +46,177 @@ task_ranked AS
 task_latest AS
 (
     SELECT
-        t.id,
-        t.ActionOn,
-        t.task_code,
-        t.target_start,
-        t.target_end,
-        t.actual_start,
-        t.actual_end,
-        t.progress,
-        t.well_id
-    FROM task_ranked AS t
-    WHERE t.row_num = 1
+        tr.id,
+        tr.ActionOn,
+        tr.task_code,
+        tr.target_start,
+        tr.target_end,
+        tr.actual_start,
+        tr.actual_end,
+        tr.progress,
+        tr.well_id
+    FROM task_ranked AS tr
+    WHERE tr.row_num = 1
 ),
-mapping_one AS
+mapping_collapsed AS
 (
     SELECT
-        CAST(m.Activity_ID AS nvarchar(50)) AS activity_id,
+        CONVERT(nvarchar(50), m.Activity_ID) AS activity_id,
         MAX(m.New_Activity_Code) AS activity_code
     FROM dbo.mapping_master AS m
-    GROUP BY CAST(m.Activity_ID AS nvarchar(50))
+    GROUP BY CONVERT(nvarchar(50), m.Activity_ID)
     HAVING COUNT(DISTINCT m.New_Activity_Code) = 1
 ),
-description_one AS
+description_collapsed AS
 (
     SELECT
-        a.activity_code,
-        MAX(a.activity_group_description) AS wbs,
-        MAX(a.crew_code) AS crew_code
-    FROM dbo.activity_master_csv AS a
-    GROUP BY a.activity_code
-    HAVING COUNT(DISTINCT a.activity_group_description) <= 1
-       AND COUNT(DISTINCT a.crew_code) <= 1
+        amc.activity_code,
+        MAX(amc.activity_group_description) AS wbs,
+        MAX(amc.crew_code) AS crew_code
+    FROM dbo.activity_master_csv AS amc
+    GROUP BY amc.activity_code
+    HAVING COUNT(DISTINCT amc.activity_group_description) = 1
+       AND COUNT(DISTINCT amc.crew_code) = 1
 ),
-task_base AS
+task_activity AS
 (
     SELECT
         t.well_id,
-        LTRIM(RTRIM(t.task_code)) AS task_code,
+        t.task_code,
         t.ActionOn,
-        CASE
-            WHEN CHARINDEX('-', LTRIM(RTRIM(t.task_code))) > 0
-            THEN LEFT
-            (
-                LTRIM(RTRIM(t.task_code)),
-                NULLIF(CHARINDEX('-', LTRIM(RTRIM(t.task_code))), 0) - 1
-            )
-        END AS activity_id,
+        LEFT(t.task_code, NULLIF(CHARINDEX('-', t.task_code), 0) - 1) AS activity_id,
+        m.activity_code,
+        d.wbs,
+        d.crew_code,
         t.target_start,
         t.target_end,
         t.actual_start,
         t.actual_end,
         t.progress
     FROM task_latest AS t
-    INNER JOIN well_data AS w
-        ON CONVERT(varchar(50), t.well_id) = CONVERT(varchar(50), w.well_id)
+    LEFT JOIN mapping_collapsed AS m
+        ON m.activity_id =
+           LEFT(t.task_code, NULLIF(CHARINDEX('-', t.task_code), 0) - 1)
+    LEFT JOIN description_collapsed AS d
+        ON d.activity_code = m.activity_code
 ),
-task_calc AS
+task_status AS
 (
     SELECT
-        b.well_id,
-        b.task_code,
-        b.ActionOn,
-        b.activity_id,
-        m.activity_code,
-        a.wbs,
-        a.crew_code,
-        b.target_start,
-        b.target_end,
-        b.actual_start,
-        b.actual_end,
+        ta.well_id,
+        ta.task_code,
+        ta.ActionOn,
+        ta.activity_id,
+        ta.activity_code,
+        ta.wbs,
+        ta.crew_code,
+        ta.target_start,
+        ta.target_end,
+        ta.actual_start,
+        ta.actual_end,
         CASE
-            WHEN b.target_start IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN b.actual_start IS NULL AND b.target_start < CAST(GETDATE() AS date)
+            WHEN ta.target_start IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN ta.actual_start IS NULL AND ta.target_start < CAST(GETDATE() AS date)
                 THEN 'NOT_STARTED_SLIPPING'
-            WHEN b.actual_start IS NULL THEN 'NOT_STARTED_ON_SCHEDULE'
-            WHEN b.actual_start < b.target_start THEN 'STARTED_EARLY'
-            WHEN b.actual_start = b.target_start THEN 'STARTED_ON_TIME'
+            WHEN ta.actual_start IS NULL THEN 'NOT_STARTED_ON_SCHEDULE'
+            WHEN ta.actual_start < ta.target_start THEN 'STARTED_EARLY'
+            WHEN ta.actual_start = ta.target_start THEN 'STARTED_ON_TIME'
             ELSE 'START_DELAYED'
         END AS start_status,
         CASE
-            WHEN b.target_start IS NULL THEN NULL
-            WHEN b.actual_start IS NOT NULL
-                THEN DATEDIFF(day, b.target_start, b.actual_start)
-            WHEN b.target_start < CAST(GETDATE() AS date)
-                THEN DATEDIFF(day, b.target_start, CAST(GETDATE() AS date))
+            WHEN ta.target_start IS NULL THEN NULL
+            WHEN ta.actual_start IS NOT NULL
+                THEN DATEDIFF(day, ta.target_start, ta.actual_start)
+            WHEN ta.target_start < CAST(GETDATE() AS date)
+                THEN DATEDIFF(day, ta.target_start, CAST(GETDATE() AS date))
             ELSE NULL
         END AS start_variance_days,
         CASE
-            WHEN b.target_end IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN b.actual_end IS NOT NULL AND b.actual_end < b.target_end
+            WHEN ta.target_end IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN ta.actual_end IS NOT NULL AND ta.actual_end < ta.target_end
                 THEN 'COMPLETED_EARLY'
-            WHEN b.actual_end IS NOT NULL AND b.actual_end = b.target_end
+            WHEN ta.actual_end IS NOT NULL AND ta.actual_end = ta.target_end
                 THEN 'COMPLETED_ON_TIME'
-            WHEN b.actual_end IS NOT NULL
-                THEN 'COMPLETED_LATE'
-            WHEN b.target_end > CAST(GETDATE() AS date)
+            WHEN ta.actual_end IS NOT NULL THEN 'COMPLETED_LATE'
+            WHEN ta.target_end > CAST(GETDATE() AS date)
                 THEN 'IN_PROGRESS_NOT_LATE'
-            WHEN b.target_end = CAST(GETDATE() AS date)
+            WHEN ta.target_end = CAST(GETDATE() AS date)
                 THEN 'DUE_TODAY'
             ELSE 'OVERDUE'
         END AS end_status,
         CASE
-            WHEN b.target_end IS NULL THEN NULL
-            WHEN b.actual_end IS NOT NULL
-                THEN DATEDIFF(day, b.target_end, b.actual_end)
-            WHEN b.target_end < CAST(GETDATE() AS date)
-                THEN DATEDIFF(day, b.target_end, CAST(GETDATE() AS date))
+            WHEN ta.target_end IS NULL THEN NULL
+            WHEN ta.actual_end IS NOT NULL
+                THEN DATEDIFF(day, ta.target_end, ta.actual_end)
+            WHEN ta.target_end < CAST(GETDATE() AS date)
+                THEN DATEDIFF(day, ta.target_end, CAST(GETDATE() AS date))
             ELSE NULL
         END AS end_variance_days,
         CASE
-            WHEN b.actual_end IS NOT NULL THEN 'COMPLETED'
-            WHEN b.actual_start IS NULL
-                 AND b.target_start IS NOT NULL
-                 AND b.target_start < CAST(GETDATE() AS date)
+            WHEN ta.actual_end IS NOT NULL THEN 'COMPLETED'
+            WHEN ta.actual_start IS NULL
+                 AND ta.target_start < CAST(GETDATE() AS date)
                 THEN 'NOT_STARTED_LATE'
-            WHEN b.actual_start IS NULL THEN 'NOT_STARTED'
+            WHEN ta.actual_start IS NULL THEN 'NOT_STARTED'
             ELSE 'IN_PROGRESS'
         END AS execution_status,
         CASE
-            WHEN b.target_end IS NOT NULL
-             AND
-             (
-                 (b.actual_end IS NULL AND b.target_end < CAST(GETDATE() AS date))
-                 OR b.actual_end > b.target_end
-             )
+            WHEN ta.target_end IS NOT NULL
+                 AND
+                 (
+                     ta.actual_end > ta.target_end
+                     OR
+                     (
+                         ta.actual_end IS NULL
+                         AND ta.target_end < CAST(GETDATE() AS date)
+                     )
+                 )
                 THEN 'RED'
-            WHEN b.actual_start IS NULL
-             AND b.target_start IS NOT NULL
-             AND b.target_start < CAST(GETDATE() AS date)
+            WHEN ta.actual_start IS NULL
+                 AND ta.target_start IS NOT NULL
+                 AND ta.target_start < CAST(GETDATE() AS date)
                 THEN 'AMBER_START_SLIPPING'
-            WHEN b.actual_start IS NOT NULL
-             AND b.target_start IS NOT NULL
-             AND b.actual_start > b.target_start
+            WHEN ta.actual_start IS NOT NULL
+                 AND ta.target_start IS NOT NULL
+                 AND ta.actual_start > ta.target_start
                 THEN 'AMBER_START_DELAYED'
             ELSE 'GREEN'
         END AS schedule_risk,
-        CASE
-            WHEN b.target_end IS NOT NULL
-             AND
-             (
-                 (b.actual_end IS NULL AND b.target_end < CAST(GETDATE() AS date))
-                 OR b.actual_end > b.target_end
-             )
-                THEN 1
-            WHEN b.actual_start IS NULL
-             AND b.target_start IS NOT NULL
-             AND b.target_start < CAST(GETDATE() AS date)
-                THEN 2
-            WHEN b.actual_start IS NOT NULL
-             AND b.target_start IS NOT NULL
-             AND b.actual_start > b.target_start
-                THEN 2
-            ELSE 3
-        END AS risk_sort,
-        b.progress
-    FROM task_base AS b
-    LEFT JOIN mapping_one AS m
-        ON CAST(m.activity_id AS nvarchar(50)) = b.activity_id
-    LEFT JOIN description_one AS a
-        ON a.activity_code = m.activity_code
+        ta.progress
+    FROM task_activity AS ta
 )
 SELECT
-    d.well_id AS well_id,
-    d.task_code AS task_code,
-    d.ActionOn AS action_on,
-    d.activity_id AS activity_id,
-    d.activity_code AS activity_code,
-    d.wbs AS wbs,
-    d.crew_code AS crew_code,
-    d.target_start AS target_start,
-    d.target_end AS target_end,
-    d.actual_start AS actual_start,
-    d.actual_end AS actual_end,
-    d.start_status AS start_status,
-    d.start_variance_days AS start_variance_days,
-    d.end_status AS end_status,
-    d.end_variance_days AS end_variance_days,
-    d.execution_status AS execution_status,
-    d.schedule_risk AS schedule_risk,
+    ts.well_id AS well_id,
+    ts.task_code AS task_code,
+    ts.ActionOn AS action_on,
+    ts.activity_id AS activity_id,
+    ts.activity_code AS activity_code,
+    ts.wbs AS wbs,
+    ts.crew_code AS crew_code,
+    ts.target_start AS target_start,
+    ts.target_end AS target_end,
+    ts.actual_start AS actual_start,
+    ts.actual_end AS actual_end,
+    ts.start_status AS start_status,
+    ts.start_variance_days AS start_variance_days,
+    ts.end_status AS end_status,
+    ts.end_variance_days AS end_variance_days,
+    ts.execution_status AS execution_status,
+    ts.schedule_risk AS schedule_risk,
     CASE
-        WHEN d.progress IS NULL THEN NULL
-        ELSE d.progress * 100.0
+        WHEN ts.progress IS NULL THEN NULL
+        ELSE ts.progress * CAST(100 AS decimal(18, 6))
     END AS progress_percent
-FROM task_calc AS d
+FROM task_status AS ts
+INNER JOIN well_data AS wd
+    ON CONVERT(varchar(50), ts.well_id) = CONVERT(varchar(50), wd.well_id)
 ORDER BY
-    d.risk_sort ASC,
-    d.end_variance_days DESC,
-    d.start_variance_days DESC,
-    d.target_end ASC
+    CASE ts.schedule_risk
+        WHEN 'RED' THEN 1
+        WHEN 'AMBER_START_SLIPPING' THEN 2
+        WHEN 'AMBER_START_DELAYED' THEN 3
+        ELSE 4
+    END,
+    ts.end_variance_days DESC,
+    ts.start_variance_days DESC,
+    ts.target_end ASC

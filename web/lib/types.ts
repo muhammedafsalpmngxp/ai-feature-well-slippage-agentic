@@ -105,6 +105,13 @@ export interface PipelineStatus {
     started_at: string | null;
     finished_at: string | null;
     exit_code: number | null;
+    /**
+     * The pipeline's last ~40 log lines, streamed by the API as the subprocess writes them.
+     * This is what lets the browser show which STAGE a run is in rather than only "running" —
+     * real events, not a guessed progress bar. It is a rolling window, so early lines scroll
+     * off on a long run; read it as "furthest progress seen", never as a complete transcript.
+     */
+    tail?: string[];
   };
 }
 

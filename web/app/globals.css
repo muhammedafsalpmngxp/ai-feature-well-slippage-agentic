@@ -223,6 +223,55 @@ select:focus {
     stroke 280ms ease;
 }
 
+/*
+  Run progress. The bar is INDETERMINATE on purpose: the pipeline cannot know what fraction
+  remains, because an agent may rewrite a query two or three times before the verifier approves
+  it. A bar that advanced on a timer would be most confident exactly when a run had stalled.
+*/
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%) scaleX(0.35);
+  }
+  50% {
+    transform: translateX(30%) scaleX(0.55);
+  }
+  100% {
+    transform: translateX(160%) scaleX(0.35);
+  }
+}
+.bar-indeterminate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--color-accent);
+  transform-origin: left;
+  animation: indeterminate 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.75);
+  }
+}
+.dot-active {
+  animation: pulse-dot 1.3s ease-in-out infinite;
+}
+
+/* Under reduced motion the animations below are stopped dead, which would leave the bar frozen
+   off-screen and reading as broken. A calm static fill says "working" without moving. */
+@media (prefers-reduced-motion: reduce) {
+  .bar-indeterminate::after {
+    transform: none;
+    opacity: 0.55;
+  }
+}
+
 /* The toggle's sun/moon pair. Declared AFTER `.theme-anim` deliberately: that rule sets
    `transition` on every descendant, and at equal specificity the later rule wins - written above
    this one, it would strip the transform transition and the icons would jump instead of turn. */

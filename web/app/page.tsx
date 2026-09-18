@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { SqlViewer } from "@/components/SqlViewer";
 import { WellLookup } from "@/components/WellLookup";
+import { RunProgress } from "@/components/RunProgress";
 import { WellsTable } from "@/components/WellsTable";
 import { Card, ErrorNote, Skeleton, Stat, StatStrip } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
@@ -23,6 +24,8 @@ export default function Dashboard() {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  // When the button was pressed, so the progress timer starts at the click.
+  const [startedLocally, setStartedLocally] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -65,6 +68,10 @@ export default function Dashboard() {
   }, [load]);
 
   // Poll only while a run is actually in progress, then refresh once and stop.
+  //
+  // 2s rather than 5s: this now drives a live stage list, and a run's stages turn over faster
+  // than five seconds - at 5s the planner could begin and finish between two polls and never
+  // appear. Still cheap, because a status read touches no database unless asked (see load).
   useEffect(() => {
     if (!status?.run.running) return;
     const timer = setInterval(async () => {
@@ -75,7 +82,7 @@ export default function Dashboard() {
       } else if (next) {
         setStatus(next);
       }
-    }, 5000);
+    }, 2000);
     return () => clearInterval(timer);
   }, [status?.run.running, load]);
 
@@ -121,6 +128,7 @@ export default function Dashboard() {
 
   async function startRun() {
     setStarting(true);
+    setStartedLocally(new Date().toISOString());
     try {
       // regenerate: the agents author and verify every query again. "Re-run analysis" has to
       // mean the analysis, not a re-execution of the SQL it produced last time.
@@ -182,6 +190,8 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      <RunProgress status={status} starting={starting} startedLocally={startedLocally} />
 
       {error && <ErrorNote message={error} onRetry={() => void load()} />}
 
