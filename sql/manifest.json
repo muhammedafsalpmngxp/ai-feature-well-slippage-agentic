@@ -40,29 +40,27 @@
       "columns": [
         "well_id",
         "flaf_deadline",
+        "flaf_actual",
         "flaf_status",
         "flaf_variance_days",
         "pegging_deadline",
+        "pegging_actual",
         "pegging_status",
         "pegging_variance_days",
-        "construction_deadline",
-        "construction_status",
-        "construction_variance_days",
         "rig_on_deadline",
+        "rig_on_actual",
         "rig_on_status",
         "rig_on_variance_days",
         "rig_off_deadline",
+        "rig_off_actual",
         "rig_off_status",
         "rig_off_variance_days",
-        "hookup_deadline",
-        "hookup_status",
-        "hookup_variance_days",
         "well_slippage_status"
       ],
       "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T04:37:33+00:00",
-      "row_count": 216,
-      "sql_sha256": "c3046c2424c4a8121c057b068e40a58e155826a57a07e2555768c1938257a1cb"
+      "frozen_at": "2026-09-18T09:32:56+00:00",
+      "row_count": 212,
+      "sql_sha256": "cf097985dd83563457fe254bfc6c95ecf0bbd2de1a271e2415c336aca5fdd840"
     }
   },
   "version": 1

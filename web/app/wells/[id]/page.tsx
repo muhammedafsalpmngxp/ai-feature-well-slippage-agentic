@@ -83,14 +83,33 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
     const late = rows.filter((t) => t.schedule_risk !== "GREEN");
     const activities = new Set(late.map((t) => t.activity_code).filter(Boolean)).size;
     const unmapped = late.filter((t) => !t.activity_code).length;
-    return { total: rows.length, red, amber, notStarted, worst, activities, unmapped };
+    const inProgress = rows.filter((t) => t.execution_status === "IN_PROGRESS").length;
+    const completed = rows.filter((t) => t.execution_status === "COMPLETED").length;
+    return {
+      total: rows.length, red, amber, notStarted, worst, activities, unmapped,
+      inProgress, completed,
+    };
   }, [tasks]);
 
+  /**
+   * Filter on schedule risk OR execution status, prefixed so one control can do both.
+   *
+   * Execution status is here because risk alone could not reach it: a task that never started
+   * is RED once its END is also missed, which puts it in the same bucket as a task that started
+   * and ran late. The "Not started, late" figure above counted them, and nothing in the table
+   * could isolate them.
+   */
   const visible = useMemo(() => {
     const rows = tasks ?? [];
     if (riskFilter === "all") return rows;
-    if (riskFilter === "AMBER") return rows.filter((t) => t.schedule_risk?.startsWith("AMBER"));
-    return rows.filter((t) => t.schedule_risk === riskFilter);
+    if (riskFilter === "risk:AMBER") return rows.filter((t) => t.schedule_risk?.startsWith("AMBER"));
+    if (riskFilter.startsWith("risk:")) {
+      return rows.filter((t) => t.schedule_risk === riskFilter.slice(5));
+    }
+    if (riskFilter.startsWith("exec:")) {
+      return rows.filter((t) => t.execution_status === riskFilter.slice(5));
+    }
+    return rows;
   }, [tasks, riskFilter]);
 
   const headline = String(well?.well_slippage_status ?? "");
@@ -167,10 +186,11 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
           <TableShell>
             <thead>
               <tr>
-                <Th className="w-56">Milestone</Th>
-                <Th className="w-44">Deadline</Th>
+                <Th className="w-52">Milestone</Th>
+                <Th className="w-40">Deadline</Th>
+                <Th className="w-40">Actual</Th>
                 <Th>Status</Th>
-                <Th align="right" className="w-36">Variance</Th>
+                <Th align="right" className="w-32">Variance</Th>
               </tr>
             </thead>
             <tbody>
@@ -180,6 +200,12 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                   <tr key={m} className="transition-colors hover:bg-surface-2">
                     <Td className="font-semibold">{MILESTONE_LABEL[m]}</Td>
                     <Td className="text-ink-2">{formatDate(well[`${m}_deadline`] as string)}</Td>
+                    {/* What actually happened, beside what was promised. An em dash here means
+                        the milestone is not complete — which is exactly what MISSED and PENDING
+                        say in the next column, so the two never contradict each other. */}
+                    <Td className="text-ink-2">
+                      {formatDate(well[`${m}_actual`] as string)}
+                    </Td>
                     <Td>
                       <Status value={well[`${m}_status`] as string} />
                     </Td>
@@ -222,9 +248,18 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
               className="h-9 rounded-lg border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none"
             >
               <option value="all">All tasks ({counts.total})</option>
-              <option value="RED">Red ({counts.red})</option>
-              <option value="AMBER">Amber ({counts.amber})</option>
-              <option value="GREEN">Green</option>
+              <optgroup label="Schedule risk">
+                <option value="risk:RED">Red ({counts.red})</option>
+                <option value="risk:AMBER">Amber ({counts.amber})</option>
+                <option value="risk:GREEN">Green</option>
+              </optgroup>
+              <optgroup label="Execution">
+                <option value="exec:NOT_STARTED_LATE">
+                  Not started, late ({counts.notStarted})
+                </option>
+                <option value="exec:IN_PROGRESS">In progress ({counts.inProgress})</option>
+                <option value="exec:COMPLETED">Completed ({counts.completed})</option>
+              </optgroup>
             </select>
           </div>
         }
@@ -258,9 +293,14 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                 <Th>Activity</Th>
                 <Th>Crew</Th>
                 <Th>Risk</Th>
+                {/* The start side was missing entirely. Without it a task that never started
+                    and one that started and ran late are the same row — both Red, both Overdue —
+                    which is why the "Not started, late" count above could not be found. */}
+                <Th>Start status</Th>
                 <Th>End status</Th>
                 <Th align="right">Overrun</Th>
                 <Th>Planned end</Th>
+                <Th>Actual end</Th>
                 <Th align="right">Progress</Th>
               </tr>
             </thead>
@@ -287,6 +327,9 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                   <Td>
                     <Status value={task.schedule_risk} />
                   </Td>
+                  <Td>
+                    <Status value={task.start_status} />
+                  </Td>
                   {/* The one tinted chip on this row. */}
                   <Td>
                     <Pill value={task.end_status} />
@@ -305,6 +348,10 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                     </span>
                   </Td>
                   <Td className="text-ink-2">{formatDate(task.target_end)}</Td>
+                  {/* Beside the planned date, so the slip is on the row rather than inferred
+                      from the overrun. An em dash means the task has not finished — which is
+                      what OVERDUE and NOT_STARTED_LATE beside it already say. */}
+                  <Td className="text-ink-2">{formatDate(task.actual_end)}</Td>
                   <Td align="right" className="text-ink-2">
                     {formatPercent(task.progress_percent)}
                   </Td>

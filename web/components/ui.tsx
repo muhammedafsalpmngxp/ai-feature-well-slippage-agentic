@@ -43,8 +43,7 @@ type Tone = "danger" | "warn" | "good" | "neutral" | "accent";
  *
  * DATA_QUALITY_ISSUE is deliberately NOT red: it does not mean late, it means the date needed to
  * judge lateness is absent. Colouring it as a delay would assert something the data does not say.
- * PENDING and RIG_ARRIVED are likewise neutral and good - a rig that has arrived is never a
- * construction failure (business_rules §4), whenever it arrived.
+ * PENDING is likewise neutral - not yet due is not an outcome.
  */
 export function toneFor(status: string | null | undefined): Tone {
   switch ((status || "").toUpperCase()) {
@@ -69,7 +68,6 @@ export function toneFor(status: string | null | undefined): Tone {
     case "STARTED_ON_TIME":
     case "GREEN":
     case "COMPLETED":
-    case "RIG_ARRIVED":
       return "good";
     case "DATA_QUALITY_ISSUE":
       return "accent";
@@ -295,14 +293,18 @@ export function Th({
   children,
   align = "left",
   className = "",
+  title,
 }: {
   children: ReactNode;
   align?: "left" | "right";
   className?: string;
+  /** Hover text, for a column whose meaning the heading alone cannot carry. */
+  title?: string;
 }) {
   return (
     <th
       scope="col"
+      title={title}
       className={`eyebrow sticky top-0 z-10 h-[34px] border-b border-line-strong bg-surface-2 px-4 whitespace-nowrap ${
         align === "right" ? "text-right" : "text-left"
       } ${className}`}
@@ -316,13 +318,17 @@ export function Td({
   children,
   align = "left",
   className = "",
+  title,
 }: {
   children: ReactNode;
   align?: "left" | "right";
   className?: string;
+  /** Hover text, for a cell whose value needs a caveat the column header cannot carry. */
+  title?: string;
 }) {
   return (
     <td
+      title={title}
       className={`h-11 border-b border-line px-4 whitespace-nowrap ${
         align === "right" ? "tnum text-right" : ""
       } ${className}`}

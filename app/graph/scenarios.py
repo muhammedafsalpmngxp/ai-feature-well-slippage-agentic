@@ -5,8 +5,22 @@ logic: the Planner is handed these scenarios and works out which COLUMNS of the 
 carry each one, the SQL Author writes the arithmetic, and the Verifier checks the result against
 the same list. Nothing else enumerates milestones.
 
-Source: milestone_rules.md §1 (the six milestones and their deadlines), §2 (the status
-vocabulary), §4 (the headline verdict and its priority order).
+Source: milestone_rules.md §1 (the milestones and their deadlines), §2 (the status vocabulary),
+§4 (the headline verdict and its priority order).
+
+⚠ FOUR MILESTONES, NOT THE SIX §1 DEFINES. Construction and hook-up were removed deliberately.
+This is a divergence from an authoritative document, so it is recorded here rather than left to
+be discovered - and it is NOT a bug to be "fixed" by adding them back:
+
+  * construction could only ever fail as MISSED, because a rig that had arrived was terminal and
+    never a failure (business_rules §4). Across the live fleet it was the headline failure for
+    ZERO wells - it never once decided anything.
+  * hook-up completion IS well completion (business_rules §8), and the population keeps only
+    wells that are not complete, so its actual date was empty for every row by construction.
+
+Removing them costs four wells that failed hook-up and nothing else; they leave the listing.
+Restoring either means restoring its Scenario here and nothing else - the prompts, the checks and
+the output contract are all generated from this list.
 """
 from __future__ import annotations
 
@@ -14,7 +28,7 @@ from dataclasses import dataclass
 
 
 # -- Status vocabulary ---------------------------------------------------------
-# milestone_rules.md §2 requires ONE vocabulary across all six milestones: "A reader comparing
+# milestone_rules.md §2 requires ONE vocabulary across every milestone: "A reader comparing
 # two milestones must not have to know which one they are looking at to interpret the value."
 #
 # ⚠ ASSUMPTION, NOT A RECORDED DECISION. §2 defines the six OUTCOMES but never gives the literal
@@ -32,16 +46,6 @@ STATUS_AHEAD = "AHEAD_OF_SCHEDULE"           # completed before the deadline
 STATUS_ON_SCHEDULE = "ON_SCHEDULE"           # completed exactly on the deadline
 STATUS_DELAYED = "DELAYED"                   # completed after the deadline
 
-# Construction only. milestone_rules §1 gives construction FOUR outcomes - "missing-data, missed,
-# pending, and rig-arrived" - and no late one, because the rig arriving is only a proxy for
-# completion and carries no grade. business_rules §4 says the same from the other side: "If the
-# rig has come on, the construction deadline is not treated as missed... it does not detect a
-# construction delay on a well whose rig has already arrived."
-#
-# So this is a terminal, NON-FAILING outcome. Without it there is no valid label for a rig that
-# has arrived, and any query is forced to call it PENDING (wrong - the deadline has passed) or
-# DELAYED (wrong - business_rules §4 forbids it).
-STATUS_RIG_ARRIVED = "RIG_ARRIVED"           # construction only: the rig is on site
 
 # Evaluation order is itself a rule (§2): the missing-data guard must be tested FIRST, or an
 # absent expected date silently reads as on time - "the most dangerous wrong answer this system
@@ -66,22 +70,21 @@ class Scenario:
     owner: str
     # Deadline in business terms. The Planner maps "the expected rig-on date" onto a real column.
     deadline: str
-    # What makes the milestone complete. Construction has no completion date of its own.
+    # What makes the milestone complete.
     completed_when: str
     # Column prefix for this scenario's outputs, e.g. flaf -> flaf_status, flaf_deadline.
     prefix: str
-    # Some milestones cannot reach every status - see `statuses`.
-    excluded_statuses: tuple[str, ...] = ()
-    # Statuses this milestone has that the shared vocabulary does not (construction only).
-    extra_statuses: tuple[str, ...] = ()
-    # False when reaching a terminal state cannot make this milestone count as failed.
-    can_fail_when_complete: bool = True
     note: str = ""
 
     @property
     def statuses(self) -> tuple[str, ...]:
-        shared = tuple(s for s in STATUS_ORDER if s not in self.excluded_statuses)
-        return shared + self.extra_statuses
+        """Every milestone reports the same six outcomes.
+
+        There used to be per-scenario additions and exclusions here, for construction's
+        RIG_ARRIVED. Construction was removed, and with it the only reason any milestone differed
+        from the shared vocabulary - which is what milestone_rules §2 wanted in the first place.
+        """
+        return STATUS_ORDER
 
 
 # In the real order of the work (milestone_rules.md §1). This is NOT the reporting priority -
@@ -104,33 +107,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         prefix="pegging",
     ),
     Scenario(
-        key="construction",
-        label="Construction complete",
-        owner="Al Tasnim",
-        deadline="1 day before the expected rig-on date",
-        completed_when="the rig arrived (there is no construction completion date)",
-        prefix="construction",
-        # §1: "it has no 'finished early' or 'finished exactly on time' outcomes - only
-        # missing-data, missed, pending, and rig-arrived." DELAYED is excluded too: the rig
-        # arriving is an ungraded proxy for completion, and business_rules §4 states outright
-        # that a rig which has come on is never a construction miss.
-        excluded_statuses=(STATUS_AHEAD, STATUS_ON_SCHEDULE, STATUS_DELAYED),
-        extra_statuses=(STATUS_RIG_ARRIVED,),
-        can_fail_when_complete=False,
-        note=(
-            "Four outcomes only. The rig having arrived is terminal and NON-FAILING, whenever it "
-            "arrived: construction can fail ONLY via MISSED (deadline passed, rig still not on "
-            "site). This milestone therefore cannot detect a construction delay on a well whose "
-            "rig is already there - which business_rules §4 states explicitly, and is a limit of "
-            "the data, not of the query. "
-            "⚠ AND IT CARRIES NO VARIANCE WHEN THE RIG ARRIVED. RIG_ARRIVED is ungraded - there "
-            "is no early, on-time or late version of it - so construction_variance_days must be "
-            "NULL in that case. Only MISSED has a measurable figure: deadline to today. "
-            "Reporting a day count against an ungraded outcome states a precision the data does "
-            "not have."
-        ),
-    ),
-    Scenario(
         key="rig_on",
         label="Rig on",
         owner="PDO",
@@ -146,23 +122,6 @@ SCENARIOS: tuple[Scenario, ...] = (
         completed_when="the rig left",
         prefix="rig_off",
     ),
-    Scenario(
-        key="hookup",
-        label="Hook-up complete",
-        owner="Al Tasnim",
-        deadline=(
-            "2 days after rig-off - measured from the ACTUAL rig-off date when it is known, "
-            "falling back to the expected rig-off date only when it is not"
-        ),
-        completed_when="engineering completion was recorded",
-        prefix="hookup",
-        note=(
-            "The only deadline counted FORWARD, and the only one with two possible bases. The "
-            "actual date always wins: once the rig is genuinely off, the original plan no longer "
-            "sets the deadline. Note the population filter keeps only wells with no engineering "
-            "completion, so inside these queries this milestone is never complete."
-        ),
-    ),
 )
 
 SCENARIOS_BY_KEY = {s.key: s for s in SCENARIOS}
@@ -173,17 +132,14 @@ SCENARIOS_BY_KEY = {s.key: s for s in SCENARIOS}
 # ⚠ ASSUMPTION, NOT A RECORDED DECISION. §4 states plainly that this order is a business
 # decision - "keep the order the contract specifies rather than choosing your own" - and the
 # contract that would specify it was deleted. This is the order the sibling's slipped_wells.sql
-# actually uses, with construction inserted: that query tests only five milestones, so a well
-# whose ONLY failure is construction is currently excluded from the listing altogether.
-SLIPPAGE_PRIORITY = ("rig_on", "flaf", "pegging", "construction", "rig_off", "hookup")
+# actually uses, minus the two milestones removed here (see the module docstring).
+SLIPPAGE_PRIORITY = ("rig_on", "flaf", "pegging", "rig_off")
 
 SLIPPAGE_STATUS = {
     "rig_on": "SLIPPED - RIG ON",
     "flaf": "SLIPPED - FLAF",
     "pegging": "SLIPPED - PEGGING",
-    "construction": "SLIPPED - CONSTRUCTION",
     "rig_off": "SLIPPED - RIG OFF",
-    "hookup": "SLIPPED - HOOK-UP",
 }
 NOT_SLIPPED = "NOT SLIPPED"
 
@@ -200,8 +156,8 @@ def describe() -> str:
     is - the failure mode that lets an author satisfy a verifier about the wrong thing.
     """
     lines = [
-        "SLIPPAGE SCENARIOS (from milestone_rules.md §1 - the six milestones, in the real order "
-        "of the work):",
+        "SLIPPAGE SCENARIOS (from milestone_rules.md §1, in the real order of the work). These "
+        "are the ONLY milestones this query reports - do not add construction or hook-up:",
         "",
     ]
     for index, scenario in enumerate(SCENARIOS, 1):
@@ -223,8 +179,8 @@ def describe() -> str:
         "  values: " + "; ".join(SLIPPAGE_STATUS[k] for k in SLIPPAGE_PRIORITY),
         "",
         "A milestone counts as FAILED when its expected date exists AND either it was completed "
-        "after its deadline, or it is not complete and the deadline has already passed - EXCEPT "
-        "where the scenario's own 'fails when' line above says otherwise.",
+        "after its deadline, or it is not complete and the deadline has already passed. The same "
+        "rule for every milestone - there is no exception.",
         "A well that failed nothing is excluded by the listing filter, so '" + NOT_SLIPPED + "' "
         "should never actually reach the output.",
     ]
@@ -234,25 +190,30 @@ def describe() -> str:
 def failure_rule(scenario: Scenario) -> str:
     """When this scenario counts as a failure, for the headline verdict and the listing filter.
 
-    Stated per scenario rather than once for all six, because construction is a genuine
-    exception and burying it in a general sentence is what leaves a query author with no valid
-    label for a rig that has already arrived.
+    One rule for every milestone now. It was stated per scenario because construction was a
+    genuine exception - a rig that had arrived was terminal and never a failure - and burying
+    that in a general sentence left an author with no valid label for it. With construction gone
+    there is no exception left to carve out.
     """
-    if scenario.can_fail_when_complete:
-        return (
-            "status is " + STATUS_MISSED + " or " + STATUS_DELAYED
-            + " (the expected date exists, and it is either overdue or was completed late)"
-        )
     return (
-        "status is " + STATUS_MISSED + " ONLY. " + STATUS_RIG_ARRIVED + " is terminal and never "
-        "a failure, no matter when the rig arrived."
+        "status is " + STATUS_MISSED + " or " + STATUS_DELAYED
+        + " (the expected date exists, and it is either overdue or was completed late)"
     )
 
 
 def output_columns(scenario: Scenario) -> list[str]:
-    """The three columns every scenario contributes to the listing."""
+    """The four columns every scenario contributes to the listing.
+
+    Ordered as a reader reads them: what was promised, what happened, the verdict, the gap.
+
+    `_actual` is the RAW RECORDED DATE the milestone was completed, as this scenario's
+    `completed_when` defines it - not derived, not defaulted. Without it the listing can say a
+    milestone was 96 days late but not when it actually landed, which is the first thing anyone
+    asks next and the only one of the four that is a fact rather than a judgement.
+    """
     return [
         scenario.prefix + "_deadline",
+        scenario.prefix + "_actual",
         scenario.prefix + "_status",
         scenario.prefix + "_variance_days",
     ]

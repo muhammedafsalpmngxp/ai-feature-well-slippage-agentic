@@ -7,20 +7,13 @@ import { EMPTY, formatDate, formatVariance, varianceTone } from "@/lib/format";
 import {
   MILESTONES,
   MILESTONE_LABEL,
-  milestoneLabelOf,
-  milestoneOf,
+  failedMilestones,
+  worstVariance,
+  type Milestone,
   type WellRow,
 } from "@/lib/types";
 
 type SortKey = "well_id" | "status" | "variance";
-
-/** The variance of the milestone a well's headline status actually names. */
-function headlineVariance(well: WellRow): number | null {
-  const milestone = milestoneOf(String(well.well_slippage_status ?? ""));
-  if (!milestone) return null;
-  const value = well[`${milestone}_variance_days`];
-  return value === null || value === undefined || value === "" ? null : Number(value);
-}
 
 const FIELD =
   "h-9 rounded-lg border border-line-strong bg-surface px-2.5 text-[13px] text-ink outline-none";
@@ -39,7 +32,9 @@ export function WellsTable({
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered = wells.filter((w) => {
-      if (milestone !== "all" && milestoneOf(String(w.well_slippage_status ?? "")) !== milestone) {
+      // Any failure, not just the first: picking "Pegging" should find every well whose
+      // pegging slipped, not only those where nothing higher in priority slipped too.
+      if (milestone !== "all" && !failedMilestones(w).includes(milestone as Milestone)) {
         return false;
       }
       if (!needle) return true;
@@ -52,8 +47,8 @@ export function WellsTable({
         return String(a.well_slippage_status).localeCompare(String(b.well_slippage_status));
       }
       // Worst first. A null variance sorts last rather than as zero - it is unmeasured, not on time.
-      const av = headlineVariance(a);
-      const bv = headlineVariance(b);
+      const av = worstVariance(a);
+      const bv = worstVariance(b);
       if (av === null && bv === null) return 0;
       if (av === null) return 1;
       if (bv === null) return -1;
@@ -132,19 +127,20 @@ export function WellsTable({
           <thead>
             <tr>
               <Th>Well</Th>
-              <Th>First failure</Th>
+              <Th>Failed milestones</Th>
               <Th align="right">Overrun</Th>
               <Th>Expected rig-on</Th>
+              <Th>Actual rig-on</Th>
               <Th align="right">Delayed activities</Th>
               <Th>FLAF</Th>
               <Th>Pegging</Th>
-              <Th>Hook-up</Th>
             </tr>
           </thead>
           <tbody>
             {rows.map((well) => {
               const id = String(well.well_id);
-              const variance = headlineVariance(well);
+              const variance = worstVariance(well);
+              const failed = failedMilestones(well);
               const activity = activityByWell.get(id);
               return (
                 <tr key={id} className="transition-colors hover:bg-surface-2">
@@ -156,14 +152,25 @@ export function WellsTable({
                       {id}
                     </Link>
                   </Td>
-                  {/* The one tinted chip on this row: the column a reader is actually scanning.
-                      Labelled with the milestone alone - the column header already says these
-                      are failures, so repeating "Slipped -" in every cell says nothing. */}
+                  {/* The one tinted column on this row: what a reader is actually scanning for.
+                      Labelled with the milestone alone - the header already says these are
+                      failures, so repeating "Slipped -" in every chip says nothing. The raw
+                      status is on each chip's tooltip, which is where MISSED (never done, now
+                      overdue) stays distinguishable from DELAYED (done, but late). */}
                   <Td>
-                    <Pill
-                      value={String(well.well_slippage_status ?? "")}
-                      label={milestoneLabelOf(well.well_slippage_status)}
-                    />
+                    <span className="flex flex-wrap items-center gap-1">
+                      {failed.length === 0 ? (
+                        <span className="text-ink-3">{EMPTY}</span>
+                      ) : (
+                        failed.map((m) => (
+                          <Pill
+                            key={m}
+                            value={well[`${m}_status`] as string}
+                            label={MILESTONE_LABEL[m]}
+                          />
+                        ))
+                      )}
+                    </span>
                   </Td>
                   <Td align="right">
                     <span
@@ -179,6 +186,10 @@ export function WellsTable({
                     </span>
                   </Td>
                   <Td className="text-ink-2">{formatDate(well.rig_on_deadline as string)}</Td>
+                  {/* Beside the expected date, so the comparison is on the row rather than in
+                      the reader's head. An em dash means the rig has not arrived — which is the
+                      whole point for a well whose first failure is rig-on. */}
+                  <Td className="text-ink-2">{formatDate(well.rig_on_actual as string)}</Td>
                   <Td align="right">
                     {activity === undefined ? (
                       <span className="text-ink-3">{EMPTY}</span>
@@ -191,9 +202,6 @@ export function WellsTable({
                   </Td>
                   <Td>
                     <Status value={well.pegging_status as string} />
-                  </Td>
-                  <Td>
-                    <Status value={well.hookup_status as string} />
                   </Td>
                 </tr>
               );

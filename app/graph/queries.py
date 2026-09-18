@@ -112,10 +112,15 @@ MILESTONE ARITHMETIC - follow milestone_rules §1-§4 exactly:
 - There is no tolerance window. ON_SCHEDULE means the completion date EQUALS the deadline exactly.
 - The headline verdict tests the scenarios in the given priority order and takes the first that
   FAILED, honouring each scenario's own 'fails when' rule.
-- A VARIANCE IS ONLY REPORTED FOR A GRADED OUTCOME. Where a scenario's status is terminal but
-  ungraded - construction's RIG_ARRIVED is the one such case - its *_variance_days is NULL, not
-  a day count. There is no early/on-time/late version of "the rig arrived", so a number there
-  claims a precision the data does not carry. Only MISSED yields a figure: deadline to today.
+- A VARIANCE IS ONLY REPORTED FOR A GRADED OUTCOME. PENDING and DATA_QUALITY_ISSUE carry NULL,
+  not a day count: nothing has been measured. MISSED yields deadline-to-today; a completed
+  milestone yields deadline-to-completion, signed.
+- EVERY MILESTONE ALSO REPORTS ITS ACTUAL DATE in <prefix>_actual: the real recorded date it was
+  completed, exactly as that scenario's 'completed when' line defines it. Project the column
+  itself - do NOT derive it, round it, or substitute the deadline for it.
+  NULL when the milestone is not complete. Not a placeholder date, not the deadline, not today:
+  an absent completion is the very thing MISSED and PENDING already report, and a date there
+  would contradict the status beside it.
 - PREFER deriving the failure condition ONCE and filtering on its result
   (WHERE well_slippage_status IS NOT NULL) over writing the same condition in both the CASE and
   the WHERE. §4 warns those two copies drift apart silently; deriving it once makes that

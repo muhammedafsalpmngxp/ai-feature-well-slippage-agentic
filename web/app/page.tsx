@@ -10,7 +10,8 @@ import { formatAge, formatVariance, varianceTone } from "@/lib/format";
 import {
   MILESTONES,
   MILESTONE_LABEL,
-  milestoneOf,
+  failedMilestones,
+  worstVariance,
   type ActivitySummaryRow,
   type PipelineStatus,
   type WellRow,
@@ -89,22 +90,23 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const rows = wells ?? [];
+    // EVERY failure, not just each well's first. Counting headlines made the priority order
+    // masquerade as a finding: pegging showed 11 wells when it had actually failed on 94, and
+    // rig-off 4 when it was 66, because rig-on sits first and absorbs everything behind it.
+    // A well is therefore counted once PER MILESTONE it failed, so these no longer sum to the
+    // fleet size - which is what the subtitle says.
     const byMilestone = new Map<string, number>();
     for (const well of rows) {
-      const m = milestoneOf(String(well.well_slippage_status ?? ""));
-      if (!m) continue;
-      byMilestone.set(m, (byMilestone.get(m) ?? 0) + 1);
+      for (const m of failedMilestones(well)) {
+        byMilestone.set(m, (byMilestone.get(m) ?? 0) + 1);
+      }
     }
-    // Worst overrun across the fleet, on whichever milestone each well's headline names.
-    // Null variances are skipped, not treated as 0 - they are unmeasured, not on time.
+    // Worst overrun across the fleet, over every milestone a well failed rather than only its
+    // headline. Null variances are skipped, not treated as 0 - unmeasured is not on time.
     let worst: number | null = null;
     for (const well of rows) {
-      const m = milestoneOf(String(well.well_slippage_status ?? ""));
-      if (!m) continue;
-      const v = well[`${m}_variance_days`];
-      if (v === null || v === undefined || v === "") continue;
-      const days = Number(v);
-      if (!Number.isNaN(days) && (worst === null || days > worst)) worst = days;
+      const days = worstVariance(well);
+      if (days !== null && (worst === null || days > worst)) worst = days;
     }
     // A well is counted once here however many milestones report a data-quality outcome, so
     // this is "wells affected", not a sum of flags.
@@ -211,7 +213,7 @@ export default function Dashboard() {
           label="Worst overrun"
           value={wells === null ? "—" : formatVariance(stats.worst)}
           tone={varianceTone(stats.worst) === "danger" ? "danger" : "neutral"}
-          hint="Days past the headline milestone deadline"
+          hint="Days past any missed milestone deadline"
         />
         <Stat
           label="Data-quality flags"
@@ -222,8 +224,8 @@ export default function Dashboard() {
 
       <div className="grid gap-6 lg:grid-cols-3">
         <Card
-          title="First failure by milestone"
-          subtitle="Priority order · each well counted once"
+          title="Wells failing each milestone"
+          subtitle="A well appears once for every milestone it failed, so these do not sum to the fleet"
           className="lg:col-span-2"
         >
           <div className="space-y-3.5 px-5 py-[18px]">

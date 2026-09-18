@@ -262,10 +262,8 @@ FOR THIS QUERY SPECIFICALLY:
 - MISSED is tested before PENDING;
 - the headline verdict's failure condition and the listing's filter agree - best achieved by
   deriving the condition ONCE and filtering on its result;
-- each scenario honours its own 'fails when' rule: construction's RIG_ARRIVED is terminal and
-  NEVER a failure, whenever the rig arrived;
 - deadlines are derived from an expected date, never read from a stored column;
-- the hook-up deadline prefers the ACTUAL rig-off date and falls back to the expected one;
+- ONLY the four milestones listed in the scenarios appear: no construction, no hook-up;
 - one row per well.""",
     "activity_delay": """\
 FOR THIS QUERY SPECIFICALLY:
