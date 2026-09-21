@@ -159,8 +159,16 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex flex-col items-end gap-1">
-            <span className="eyebrow">Last analysis</span>
+          {/* ⚠ THIS IS NOT THE AGE OF THE FIGURES, and the distinction is easy to misread.
+              It is when the queries were last WRITTEN AND VERIFIED. The figures themselves come
+              from running that SQL against the live database on every read (cached 60s), so they
+              are never more than a minute old however long ago the last run was. Without the
+              tooltip, "42 min ago" reads as "these numbers are 42 minutes stale". */}
+          <div
+            className="flex flex-col items-end gap-1"
+            title="When the queries were last written and verified. The figures below are re-read from the database on every visit, so they are never more than a minute old."
+          >
+            <span className="eyebrow">Queries verified</span>
             {/* `status === null` means the check has not answered YET, which is not the same
                 claim as "never run" - and formatAge(undefined) returns exactly that. Asserting
                 a fleet has never been analysed because a fetch is still in flight is the
