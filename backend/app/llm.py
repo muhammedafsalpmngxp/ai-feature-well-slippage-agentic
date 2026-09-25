@@ -82,13 +82,13 @@ _AGENT_TUNING: dict[str, Tuning] = {
         verbosity="medium",
         why="derives nothing; the counts are precomputed, so it is formatting, not reasoning",
     ),
-    # Serve-time, not part of the pipeline (api/advisor.py). High effort because its job is
-    # judgement - is this task late BECAUSE of another delay, and which move would recover it -
-    # not formatting. It is also the one agent a person sits and waits on, so if the Suggest
-    # button feels slow this is the setting to drop to "medium" first.
+    # Serve-time, not part of the pipeline (api/advisor.py). Its job is judgement - is this task
+    # late BECAUSE of another delay, and which move would recover it - not formatting. Medium
+    # rather than high because it is the one agent a person sits and waits on: the evidence is
+    # already selected and tallied in Python, so it reasons over a short, prepared brief.
     "advisor": Tuning(
         temperature=0.2,
-        effort="high",
+        effort="medium",
         verbosity="medium",
         why="reasons about knock-on causes and recovery over evidence it is handed; a person waits",
     ),

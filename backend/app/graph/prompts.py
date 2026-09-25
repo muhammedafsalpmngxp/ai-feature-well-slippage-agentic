@@ -305,15 +305,19 @@ for that query applies to the per-task CTE underneath it, and in addition:
 - one row per well - this is the whole point of the query, so verify the grain explicitly.""",
     "crew_availability": f"""\
 FOR THIS QUERY SPECIFICALLY:
-- the task history is reduced to the LATEST record per task (partitioned by the trimmed well id
-  and the trimmed task code) BEFORE anything is counted. Counting the raw history inflates every
-  figure and credits crews with work they were replaced on - the single most likely defect here;
-- EXACTLY ONE ROW PER crew_id. Grouping by crew type as well splits a crew whose type changed
-  into rows that can disagree about whether it is free - reject that;
+- the NULL-crew filter (crew_id IS NOT NULL) is applied BEFORE the reduction, so each task keeps
+  the latest record that NAMES a crew. Filtering after it drops the crew from every task whose
+  latest update did not repeat it, and shows working crews as free - the single most likely
+  defect here, so reject it;
+- the history is still reduced to ONE record per task (partitioned by the trimmed well id and the
+  trimmed task code) before anything is counted. Counting the raw history inflates every figure;
+- only crews holding open work on a well still in progress are returned - a crew with no open
+  work anywhere does not appear. Open work is joined to the well with explicit casts on both
+  well keys;
+- EXACTLY ONE ROW PER crew_id, judged over its open work on ALL in-progress wells. Grouping by
+  crew type as well splits a crew into rows that can disagree about whether it is free - reject
+  that;
 - crew_type_id comes from the crew's most recent reduced record, as a raw id with no join;
-- the NULL-crew filter is applied AFTER the reduction, not before it;
-- workload counts only open tasks on wells still in progress, joined with explicit casts on both
-  well keys; a crew with no open work still appears, with zero counts rather than NULL;
 - availability_status is {queries.CREW_AVAILABLE} exactly when in_progress_tasks = 0, otherwise
   {queries.CREW_BUSY};
 - no TOP and no parameter.""",
@@ -384,8 +388,8 @@ Well | Delayed activity codes.
 
 ### Crew availability
 Only when the crew availability query returned rows: ONE line - how many crews are AVAILABLE and
-how many are BUSY, using the exact counts supplied. "Available" means only that no task in progress
-is recorded for that crew - not that it is on site or free of leave. Recommend nothing here: the
+how many are BUSY, using the exact counts supplied. "Available" means only that the crew holds open
+work but none of it, on any well, is in progress - not that it is on site or free of leave. Recommend nothing here: the
 per-task suggestions on the dashboard are where recovery is discussed.
 
 ### Data quality
@@ -444,8 +448,10 @@ TASK VOCABULARY (the values in the evidence):
   only a crew of the same type can take a task over. crew_id is one specific crew. crew_code
   (e.g. LCC-0803) is the crew-type CODE the activity calls for - the same scheme as the crew-type
   reference, where LCC-0803 is crew_type_id 287 - so it names a TYPE, never a crew.
-- Crew availability: {queries.CREW_AVAILABLE} = no in-progress task is recorded for the crew;
-  {queries.CREW_BUSY} = at least one is. That is ALL it means."""
+- Crew availability covers only crews holding open work on a well still in progress, judged
+  across EVERY such well: {queries.CREW_AVAILABLE} = none of that work has started;
+  {queries.CREW_BUSY} = at least one of its tasks is in progress somewhere. That is ALL it means.
+  A crew with no open work anywhere is not listed at all."""
 
 # Shared by both advisor prompts, so the task-level and well-level answers are grounded on one text.
 _ADVISOR_GROUNDING = (
@@ -493,18 +499,22 @@ QUESTION 2 - HOW COULD IT BE RECOVERED?
 - If that list is empty, say that no crew of this type is recorded as free, and suggest only what
   the evidence supports: re-sequencing this well's work, or relieving the assigned crew if it is
   carrying open work elsewhere.
-- "Available" means only that no in-progress task is recorded for the crew. It does not mean the
-  crew is on site, off leave, or near this well. Say so whenever you propose one.
-- Prefer crews with no open work, then fewer overdue tasks, then recent activity. A crew whose last
-  recorded activity is months old may no longer be working - flag it rather than recommend it.
+- "Available" means only that none of the crew's open work, on any well, is in progress. It does
+  not mean the crew is on site, off leave, or near this well. Say so ONCE, in caveats - not in
+  every action.
+- An available crew still holds open work of its own that has not started: moving it here means
+  pulling it from that work, so say what it would be pulled from (its open and overdue counts).
+- Prefer crews with the least open work, then fewer overdue tasks, then recent activity. A crew
+  whose last recorded activity is months old may no longer be working - flag it rather than
+  recommend it.
 - If the assigned crew carries open or overdue work on other wells, say so: overload is evidence.
 - NOT STARTED and past its planned start: the most direct recovery is starting it now.
 - COMPLETED LATE: there is nothing left to recover on this task - say so, and speak only to the
   effect on the work that follows it.
 - If the root cause is PDO's, recovery may be outside Al Tasnim's control - say that rather than
   prescribe crew moves that cannot help.
-- Roughly two thirds of task records carry no crew id, so crew workload is understated. Mention
-  it when a recommendation leans on a crew looking free.
+- About 60% of tasks never record a crew id on any record, so crew workload is understated.
+  Mention it once, in caveats, when a recommendation leans on a crew looking free.
 
 NEVER:
 - present a suggestion as a verified figure - you are advising, the figures are what is verified;
@@ -512,12 +522,21 @@ NEVER:
 - name the work by its task code alone - use its WBS;
 - add a crew, cause or number that is not in the evidence.
 
+LENGTH - a MEDIUM answer, readable in under a minute. These are limits, not targets:
+- summary: 2 sentences.
+- causes: at most 3, strongest first. Each cause is one sentence; its evidence is one short line
+  naming the figures it rests on (a WBS, a date, a variance) - NOT the whole rows. The page already
+  shows the full evidence beside your answer.
+- actions: at most 3, best first. Each action and each rationale is one sentence.
+- checks: at most 3. caveats: at most 2.
+Say each thing once. Leaving out a minor point is better than burying the main one.
+
 Respond with ONLY this JSON, no prose around it:
 {
   "summary": "<two sentences: why it is late as far as the data shows, and the main recovery move>",
   "caused_by_other_delay": "yes" | "possibly" | "no" | "unknown",
   "causes": [
-    {"cause": "<what>", "evidence": "<the specific rows it rests on>", "confidence": "high" | "medium" | "low"}
+    {"cause": "<what>", "evidence": "<one line: the figures it rests on>", "confidence": "high" | "medium" | "low"}
   ],
   "actions": [
     {"action": "<one concrete step>", "crew_id": <an id from the available list, or null>, "rationale": "<why, from the evidence>"}
@@ -576,12 +595,14 @@ QUESTION 2 - HOW COULD IT BE OVERCOME?
   with the crew_id. Never propose a crew of another type, and never invent an id.
 - If no crew of a type is free, say so, and propose only what the evidence supports: re-sequencing,
   or relieving an assigned crew that carries open or overdue work elsewhere (quote its load).
-- "Available" means only that no in-progress task is recorded for the crew - not that it is on site,
-  off leave, or near this well. Say so whenever you propose one.
+- "Available" means only that none of the crew's open work, on any well, is in progress - not that
+  it is on site, off leave, or near this well. Say so ONCE, in caveats - not in every action.
+- An available crew still holds open work of its own that has not started: moving it means
+  pulling it from that work, so say what it would be pulled from (its open and overdue counts).
 - If the root cause is PDO's, say recovery is outside Al Tasnim's control, and what Al Tasnim can
   still do meanwhile.
-- Roughly two thirds of task records carry no crew id, so crew workload is understated. Mention it
-  when a recommendation leans on a crew looking free.
+- About 60% of tasks never record a crew id on any record, so crew workload is understated.
+  Mention it once, in caveats, when a recommendation leans on a crew looking free.
 
 NEVER:
 - present a suggestion as a verified figure;
@@ -589,12 +610,22 @@ NEVER:
 - name the work by task code alone - use its WBS;
 - add a crew, cause or number that is not in the evidence.
 
+LENGTH - a MEDIUM answer, readable in about a minute. These are limits, not targets:
+- description: 3 sentences - why the well is delayed, whose delay it is, and the main way out.
+- why_delayed: at most 3 reasons, most important first. Each reason is one sentence; its evidence
+  is one short line naming the figures it rests on (e.g. "FLAF MISSED, +169 d, PDO") - NOT the
+  whole rows. The page already shows the full evidence beside your answer.
+- actions: at most 4, in priority order. Each action and each rationale is one sentence. Fold
+  related moves into one action (one per crew type, not one per crew) rather than listing each.
+- checks: at most 3. caveats: at most 2.
+Say each thing once. Leaving out a minor point is better than burying the main one.
+
 Respond with ONLY this JSON, no prose around it:
 {
-  "description": "<4 to 6 plain sentences for an engineer: why this well is delayed, and how to overcome it>",
+  "description": "<3 plain sentences for an engineer: why this well is delayed, whose delay it is, and how to overcome it>",
   "delayed": "yes" | "at_risk" | "no" | "unknown",
   "why_delayed": [
-    {"reason": "<what>", "evidence": "<the rows it rests on>", "owner": "PDO" | "Al Tasnim" | "unknown", "confidence": "high" | "medium" | "low"}
+    {"reason": "<what>", "evidence": "<one line: the figures it rests on>", "owner": "PDO" | "Al Tasnim" | "unknown", "confidence": "high" | "medium" | "low"}
   ],
   "actions": [
     {"priority": 1, "action": "<one concrete step>", "crew_type_id": <id or null>, "crew_id": <id or null>, "rationale": "<why, from the evidence>"}

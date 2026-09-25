@@ -18,13 +18,14 @@ mistaken for a verified figure:
   * IT MAY ONLY NAME CREWS IT WAS GIVEN. A crew id in an answer that is not among the candidates is
     flagged on the action (`crew_unverified`) and in the caveats, never passed off as advice.
 
-Answers are cached per task until the next pipeline run: each costs a high-effort model call, and
+Answers are cached per task until the next pipeline run: each costs a model call, and
 the evidence behind it only changes when the pipeline does.
 """
 from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
@@ -48,6 +49,8 @@ MAX_CANDIDATES = 8
 # pipeline run finishes. The TTL just stops a forgotten API process serving a week-old answer.
 _CACHE_TTL_SECONDS = 6 * 3600
 _cache: dict[tuple[str, str], tuple[float, dict]] = {}
+# Answers being computed right now, by the same key as the cache. See _answer().
+_inflight: dict[tuple[str, str], Future] = {}
 _lock = Lock()
 
 _VERDICTS = ("yes", "possibly", "no", "unknown")
@@ -78,6 +81,54 @@ def invalidate() -> None:
     """Drop every cached answer. Called when a pipeline run finishes: new figures, new evidence."""
     with _lock:
         _cache.clear()
+
+
+def _answer(key: tuple[str, str], fresh: bool, compute) -> dict:
+    """Serve a cached answer, join one already being computed, or compute it - never two at once.
+
+    ⚠ WHY THE JOIN, AND WHY HERE. The cache only helps AFTER an answer exists, and an answer takes
+    ~90s. Until then every request for the same key missed it and paid for its own
+    call - measured: one click in `next dev` logged two advisor calls for the same well in the
+    same second (React Strict Mode runs the panel's fetch effect twice), 94s and 100s, both
+    billed, one thrown away. Production has no Strict Mode, but the same gap is hit by a
+    double-click, by closing and reopening a panel mid-answer, and by two people on one well.
+    Only the server sees all of those callers, so the fix is here rather than in the page.
+
+    `fresh` skips the CACHE, not a call in flight: that call started after the cached answer
+    being refused, so it is already the fresh answer being asked for.
+
+    A failure is not cached: every waiting caller gets the same exception, and the next request
+    tries again. No wait timeout is needed, because the call being waited on is bounded by
+    LLM_TIMEOUT.
+    """
+    with _lock:
+        if not fresh:
+            hit = _cache.get(key)
+            if hit and time.time() - hit[0] < _CACHE_TTL_SECONDS:
+                return {**hit[1], "cached": True}
+        pending = _inflight.get(key)
+        leader = pending is None
+        if leader:
+            pending = _inflight[key] = Future()
+
+    if not leader:
+        log.info("advisor: %s is already being answered - waiting for that call, not starting another",
+                 "/".join(key))
+        # Generated for this request's moment, so it is NOT reported as cached.
+        return dict(pending.result())
+
+    try:
+        result = compute()
+    except BaseException as exc:
+        with _lock:
+            _inflight.pop(key, None)
+        pending.set_exception(exc)
+        raise
+    with _lock:
+        _cache[key] = (time.time(), result)
+        _inflight.pop(key, None)
+    pending.set_result(result)
+    return result
 
 
 # -- Small helpers ----------------------------------------------------------------
@@ -235,8 +286,9 @@ def _crews(task: dict) -> dict:
         if c.get("availability_status") == queries.CREW_AVAILABLE
         and not _same(c.get("crew_id"), task.get("crew_id"))
     ]
-    # Most room first: no open work, then fewest overdue, then most recently recorded - a crew no
-    # one has recorded for months may not be working at all. Two stable sorts give that order.
+    # Most room first: least open work of its own, then fewest overdue, then most recently recorded
+    # - a crew no one has recorded for months may not be working at all. Every listed crew holds
+    # some open work (see queries.CREW_AVAILABILITY). Two stable sorts give that order.
     free.sort(key=lambda c: _day(c.get("latest_action_on")) or "", reverse=True)
     free.sort(key=lambda c: (_count(c.get("open_tasks")), _count(c.get("overdue_tasks"))))
 
@@ -245,7 +297,7 @@ def _crews(task: dict) -> dict:
     out["busy_count"] = sum(1 for c in same_type if c.get("availability_status") != queries.CREW_AVAILABLE)
     out["type_total"] = len(same_type)
     if not same_type:
-        out["note"] = "No crew of this type appears on any current task record."
+        out["note"] = "No crew of this type holds open work on any well still in progress."
     return out
 
 
@@ -360,12 +412,11 @@ def suggest(well_id: str, task_code: str, fresh: bool = False) -> dict:
         raise AdvisorUnavailable("OPENAI_API_KEY is not set in .env, so the suggestion agent cannot run.")
 
     key = (str(well_id).strip(), str(task_code).strip())
-    if not fresh:
-        with _lock:
-            hit = _cache.get(key)
-        if hit and time.time() - hit[0] < _CACHE_TTL_SECONDS:
-            return {**hit[1], "cached": True}
+    return _answer(key, fresh, lambda: _suggest_task(key))
 
+
+def _suggest_task(key: tuple[str, str]) -> dict:
+    """The uncached answer for one task: gather the evidence, then ask the model once."""
     tasks = service.activity_for_well(key[0])
     task = next((t for t in tasks if str(t.get("task_code") or "").strip() == key[1]), None)
     if task is None:
@@ -400,8 +451,6 @@ def suggest(well_id: str, task_code: str, fresh: bool = False) -> dict:
         "raw": None if advice else (raw or "").strip(),
         "evidence": evidence,
     }
-    with _lock:
-        _cache[key] = (time.time(), result)
     return result
 
 
@@ -654,12 +703,11 @@ def suggest_well(well_id: str, fresh: bool = False) -> dict:
         raise AdvisorUnavailable("OPENAI_API_KEY is not set in .env, so the suggestion agent cannot run.")
 
     key = (str(well_id).strip(), _WELL_KEY)
-    if not fresh:
-        with _lock:
-            hit = _cache.get(key)
-        if hit and time.time() - hit[0] < _CACHE_TTL_SECONDS:
-            return {**hit[1], "cached": True}
+    return _answer(key, fresh, lambda: _suggest_well(key))
 
+
+def _suggest_well(key: tuple[str, str]) -> dict:
+    """The uncached well-level answer: gather the evidence, then ask the model once."""
     # Ordered most urgent first by the verified query itself, so the head of `late` is the worst.
     tasks = service.activity_for_well(key[0])
     late = [t for t in tasks if _is_late(t)]
@@ -691,6 +739,4 @@ def suggest_well(well_id: str, fresh: bool = False) -> dict:
         "raw": None if advice else (raw or "").strip(),
         "evidence": evidence,
     }
-    with _lock:
-        _cache[key] = (time.time(), result)
     return result

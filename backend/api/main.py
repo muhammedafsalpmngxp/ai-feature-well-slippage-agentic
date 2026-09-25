@@ -176,7 +176,7 @@ def suggest(
     """How could this late task be recovered, and is it late because of another delay?
 
     ⚠ THE ONE ENDPOINT THAT CALLS A MODEL (see api/advisor.py). POST rather than GET because an
-    uncached call spends a high-effort model call, and a GET can be prefetched or replayed by
+    uncached call spends a model call, and a GET can be prefetched or replayed by
     anything that follows links.
     """
     well_id = (well_id or "").strip()

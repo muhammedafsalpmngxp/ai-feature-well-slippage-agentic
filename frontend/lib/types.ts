@@ -72,16 +72,22 @@ export interface TaskRow {
   progress_percent: number | null;
 }
 
-/** One crew, fleet-wide, from the crew_availability query. */
+/**
+ * One crew, judged across the whole fleet, from the crew_availability query. Only crews holding
+ * open work on an in-progress well are listed.
+ */
 export interface CrewRow {
   crew_id: number | string;
   crew_type_id: number | string | null;
   open_tasks: number;
   in_progress_tasks: number;
   overdue_tasks: number;
-  wells_active: number;
+  /** Distinct in-progress wells where the crew has open work. */
+  wells_with_open_tasks: number;
+  /** Distinct wells where the crew has work started and not finished - where it is working now. */
+  wells_in_progress: number;
   latest_action_on: string | null;
-  /** AVAILABLE = no in-progress task is recorded for the crew. Not leave, location or shift. */
+  /** AVAILABLE = none of its open work, on any well, is in progress. Not leave, location or shift. */
   availability_status: "AVAILABLE" | "BUSY" | string;
 }
 

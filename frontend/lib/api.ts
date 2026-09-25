@@ -93,7 +93,7 @@ export const api = {
   crews: () => get<{ crews: CrewRow[] }>("/api/crews").then((r) => r.crews),
   /**
    * Ask the suggestion agent about one late task. The only call that spends a model call, so it
-   * is a POST, and it gets a long leash: a high-effort answer can take a minute or more. The Next
+   * is a POST, and it gets a long leash: an answer can take a minute or more. The Next
    * proxy's own timeout is raised to match in next.config.ts - without that it cuts the request
    * off at 30s whatever this says. `fresh` skips the API's cached answer.
    */

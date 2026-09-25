@@ -82,13 +82,14 @@ RISK_STATUSES = (RISK_RED, RISK_AMBER_START_SLIPPING, RISK_AMBER_START_DELAYED, 
 
 
 # -- Crew availability vocabulary ----------------------------------------------
-# ⚠ ASSUMPTION, NOT A RECORDED DECISION. Neither rule document defines when a crew is
-# "available", and the database holds no roster, leave, shift or location data. This is the
-# narrowest definition the data can actually support: a crew is AVAILABLE when no task it is
-# assigned to is IN PROGRESS (started, not finished) on a well still in progress. It says nothing
-# about whether the crew is on site, off leave, or anywhere near a given well - the suggestion
-# agent is told so, and says so. Change the strings or the definition here and in the guidance
-# below; nothing else needs touching.
+# TEAM DECISION (2026-09-25), replacing an earlier assumption. Neither rule document defines when
+# a crew is "available", and the database holds no roster, leave, shift or location data. The
+# definition: a crew is listed only while it holds OPEN work on at least one well still in
+# progress, and it is AVAILABLE when none of that work, on ANY well, is IN PROGRESS (started, not
+# finished). A crew with no open work anywhere is not listed at all - the data cannot tell one
+# that has just finished from one that has left the project. It still says nothing about whether
+# the crew is on site, off leave, or anywhere near a given well - the suggestion agent is told so,
+# and says so. Change the strings or the definition here and in the guidance below.
 CREW_AVAILABLE = "AVAILABLE"
 CREW_BUSY = "BUSY"
 
@@ -331,8 +332,8 @@ population filter.
 CREW_AVAILABILITY = QuerySpec(
     key="crew_availability",
     label="Crew availability",
-    question="For every crew on the current task records, what type of crew is it, how much open "
-             "work does it carry, and is it free right now?",
+    question="For every crew holding open work on an in-progress well, what type of crew is it, how "
+             "much open work does it carry across the whole fleet, and is it free right now?",
     grain="one row per crew (bounded by the number of crews, never by the task count)",
     contract=(
         "crew_id",
@@ -340,59 +341,70 @@ CREW_AVAILABILITY = QuerySpec(
         "open_tasks",
         "in_progress_tasks",
         "overdue_tasks",
-        "wells_active",
+        "wells_with_open_tasks",
+        "wells_in_progress",
         "latest_action_on",
         "availability_status",
     ),
     guidance="""\
 WHAT THIS IS FOR. When a task is late, the question is which crews of the SAME crew type could
-take it on. This query answers the crew side of that, fleet-wide, one row per crew; the matching
-to a particular task happens later, on crew_type_id. So crew_type_id must be right, and every
-count must describe CURRENT work, not history.
+take it on - and a crew is only free if it is free on EVERY well, not just the one being looked
+at. So this query judges each crew by its open work across the WHOLE fleet, one row per crew;
+the matching to a particular task happens later, on crew_type_id.
 
-1. REDUCE THE HISTORY FIRST - the same reduction as activity_delay. Latest record per task:
-   ROW_NUMBER() OVER (PARTITION BY the TRIMMED task well id, the TRIMMED task code ORDER BY
-   <action date> DESC, <record id> DESC), keep rn = 1. Read EVERY column below from that reduced
-   set. The raw table keeps one record per task per update, so counting it inflates every figure
-   (measured: 33,820 records for 14,243 tasks) and credits a crew that was replaced on a task
-   with work it no longer holds.
+1. REDUCE THE HISTORY, KEEPING ONLY RECORDS THAT NAME A CREW. Filter crew_id IS NOT NULL FIRST,
+   then take the latest remaining record per task: ROW_NUMBER() OVER (PARTITION BY the TRIMMED
+   task well id, the TRIMMED task code ORDER BY <action date> DESC, <record id> DESC), keep
+   rn = 1. Read EVERY column below from that reduced set.
+   ⚠ THE NULL FILTER GOES BEFORE THE REDUCTION, NOT AFTER. The daily records mostly do not repeat
+   the crew id: 68% of tasks carry none on their latest record, though only 60% never name one
+   at all. Reducing first and dropping NULL crews afterwards loses the crew from every task whose
+   latest update left it out - measured, that credited crews with 646 open tasks instead of 890,
+   and showed 33 working crews as available. A crew is on a task per the most recent record that
+   names it. The reduction itself is still required: the raw table keeps one record per task per
+   update, so counting raw rows inflates every figure.
 
-2. THE CREW UNIVERSE is every non-NULL crew id on those REDUCED records, on ANY well. Filter the
-   NULL crew ids AFTER the reduction, never before it - filtering first lets an older record
-   that named a crew stand in for a latest record that names none.
+2. OPEN WORK is the reduced tasks with no actual end, on wells STILL IN PROGRESS (the well's
+   completion date is absent - the same population filter as the other queries). Join task ->
+   well with explicit casts on BOTH sides: the two well keys are declared different types. A task
+   left open on a completed well is a stale record, not current work, and must not make a crew
+   look busy.
 
-3. crew_type_id is the type on the crew's MOST RECENT reduced record (latest action date, then
-   highest record id). EXACTLY ONE ROW PER CREW: do NOT group by crew type as well, or a crew
-   whose type changed between records splits into two rows that can disagree about whether it
-   is free. Return the raw id; do NOT join a crew or crew-type table to resolve it
-   (milestone_rules §11 - the crew table has no primary key, so that join multiplies rows).
+3. THE CREW UNIVERSE is the crews holding OPEN WORK (step 2), on any in-progress well. A crew with
+   no open work anywhere is NOT listed: with no roster data, a crew that has just finished cannot
+   be told apart from one that has left the project, so only crews currently engaged on the fleet
+   are candidates (team decision, 2026-09-25).
 
-4. WORKLOAD counts only OPEN work on wells STILL IN PROGRESS - the same population filter as the
-   other queries (the well's completion date is absent). Join task -> well with explicit casts on
-   BOTH sides: the two well keys are declared different types. A task left open on a completed
-   well is a stale record, not current work, and must not make a crew look busy.
-   A crew whose every task is finished, or sits on a completed well, STILL GETS A ROW, with zero
-   counts. Those crews are the likeliest to be free - dropping them hides the answer.
-   - open_tasks:        reduced tasks on in-progress wells with no actual end
-   - in_progress_tasks: of those, the ones with an actual start (started, not finished)
-   - overdue_tasks:     of the open ones, those whose planned end is before today
-   - wells_active:      DISTINCT wells among the open ones
+4. EXACTLY ONE ROW PER CREW: group by crew_id ONLY, never by crew type as well. A crew whose type
+   differs between tasks would split into rows that disagree about whether it is free (measured:
+   one crew came out AVAILABLE under one type and BUSY under the other, so it could be offered
+   for work while busy). crew_type_id is the type on the crew's MOST RECENT reduced record (step
+   1; latest action date, then highest record id). Return the raw id; do NOT join a crew or
+   crew-type table to resolve it (milestone_rules §11 - the crew table has no primary key, so
+   that join multiplies rows).
+
+5. THE COUNTS, each over the crew's open work on ANY in-progress well:
+   - open_tasks:            its open tasks
+   - in_progress_tasks:     of those, the ones with an actual start (started, not finished)
+   - overdue_tasks:         of those, the ones whose planned end is before today; a NULL planned
+                            end is not overdue
+   - wells_with_open_tasks: DISTINCT wells among its open tasks
+   - wells_in_progress:     DISTINCT wells among its in-progress tasks - where it is working now
    "Has not happened" is NULL in this database (§5.2) - test IS NULL, never invent a cutoff.
-   Every count is 0, never NULL, for a crew with no open work.
 
-5. latest_action_on is the most recent action date across the crew's reduced records, any well.
-   It shows how recently the crew was recorded working at all, so a reader can tell a crew that
-   is idle today from one nobody has recorded for a year.
+6. latest_action_on is the most recent action date across ALL the crew's reduced records (step
+   1), on any well, open or finished. It shows how recently the crew was recorded working at all.
 
-6. availability_status: {crew_statuses}.
-   {crew_available} when in_progress_tasks = 0, otherwise {crew_busy}. Derive in_progress_tasks
-   once and test that result, rather than restating the condition.
+7. availability_status: {crew_statuses}.
+   {crew_available} when in_progress_tasks = 0 - it holds open work, but none of it has started,
+   on any well - otherwise {crew_busy}. Derive in_progress_tasks once and test that result,
+   rather than restating the condition.
 
-7. No TOP, no well filter, no parameter. The result is bounded by the number of crews.
+8. No TOP, no well filter, no parameter. The result is bounded by the number of crews.
 
-8. ORDER BY crew_type_id, then {crew_available} before {crew_busy}, then in_progress_tasks
-   ascending, then overdue_tasks ascending, then crew_id - so within a crew type the crews with
-   the most room come first.""",
+9. ORDER BY {crew_available} before {crew_busy}, then crew_type_id, then wells_in_progress, then
+   in_progress_tasks, then overdue_tasks (all ascending), then crew_id - free crews first, and
+   within a type the crews with the most room first.""",
 )
 
 

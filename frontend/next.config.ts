@@ -8,7 +8,7 @@ const nextConfig: NextConfig = {
   // data panel sits empty with nothing in the console to explain why. Dev-only setting.
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   // The /api rewrite below proxies with a 30-second timeout by default. The suggestion agent is a
-  // high-effort model call that can run past that, and the proxy would then cut it off with a
+  // model call that can run past that, and the proxy would then cut it off with a
   // bare socket error. Sized above the API's LLM_TIMEOUT (180s) so the API's own error arrives
   // first and says what actually went wrong.
   experimental: {

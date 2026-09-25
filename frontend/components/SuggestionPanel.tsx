@@ -258,7 +258,7 @@ function Evidence({ evidence }: { evidence: Suggestion["evidence"] }) {
           <p className="tnum text-xs text-ink-3">
             Assigned crew {crew.assigned_crew_id}: {formatNumber(crew.assigned.open_tasks)} open,{" "}
             {formatNumber(crew.assigned.overdue_tasks)} overdue, on{" "}
-            {formatNumber(crew.assigned.wells_active)} well(s)
+            {formatNumber(crew.assigned.wells_with_open_tasks)} well(s)
           </p>
         )}
         {crew.available.length > 0 && (

@@ -45,14 +45,15 @@
         "open_tasks",
         "in_progress_tasks",
         "overdue_tasks",
-        "wells_active",
+        "wells_with_open_tasks",
+        "wells_in_progress",
         "latest_action_on",
         "availability_status"
       ],
       "fingerprint": "5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458",
-      "frozen_at": "2026-09-25T05:44:59+00:00",
-      "row_count": 1253,
-      "sql_sha256": "14d55be69d69c7dcec4c36fcf1c4c08bd342418aecfe6bf3323cda6c11b89603"
+      "frozen_at": "2026-09-25T09:27:26+00:00",
+      "row_count": 388,
+      "sql_sha256": "a5fb80335b4daf4afab632f52bd1955fd2cde9d2fbc7ef32ee438971360e0802"
     },
     "well_slippage": {
       "columns": [
