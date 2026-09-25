@@ -77,22 +77,14 @@ current task records carry no crew id, so crew workload is understated.
 
 ## Recovery suggestions
 
-On a well's page there are two ways to ask the suggestion agent (`api/advisor.py`):
+On a well's page, **Suggest recovery** above the task list asks the suggestion agent
+(`api/advisor.py`, `POST /api/wells/{id}/suggest-well`): *why is this well delayed, and how could
+it be overcome?* It starts from the failed milestones and their owners, then the late work grouped
+by WBS and by **crew type**, and proposes actions using free crews of each type, ranked by least
+open work.
 
-- **Suggest recovery**, above the task list (`POST /api/wells/{id}/suggest-well`): *why is this
-  well delayed, and how could it be overcome?* It starts from the failed milestones and their
-  owners, then the late work grouped by WBS and by **crew type**, and proposes actions using free
-  crews of each type.
-- **Suggest**, on every late task (`POST /api/wells/{id}/suggest?task_code=…`), which asks two
-  questions about that one task:
-
-1. **Is this task late because of another delay?** Judged from timing — late tasks on the same well
-   that were due to finish before this one started, late work in the same WBS — and from the
-   well's milestones and the lifecycle in `business_rules` §6–§7 (a late PDO pegging sheet or FLAF
-   gates Al Tasnim's construction). The data holds no dependency links, so this is inference, and
-   the agent says so.
-2. **How could it be recovered?** Using only crews of the task's **crew type** that
-   `crew_availability` shows as free, ranked by least open work.
+The task-level endpoint (`POST /api/wells/{id}/suggest?task_code=…`) still exists, but the page no
+longer has a Suggest button on each task.
 
 What keeps a model's opinion apart from the verified figures:
 
@@ -101,7 +93,7 @@ What keeps a model's opinion apart from the verified figures:
 - **The answer is returned beside that evidence**, and the page shows the two side by side.
 - **It may only name crews it was given.** A crew id outside the candidate list is flagged as
   unverified on the page.
-- Answers are **cached per task** until the next pipeline run. "Ask again" forces a new one.
+- Answers are **cached per well** until the next pipeline run. "Ask again" forces a new one.
 
 This reverses the brief's rule against recommending manpower changes *for this panel only*: the
 synthesizer still recommends nothing, and every suggestion is labelled as AI-generated.

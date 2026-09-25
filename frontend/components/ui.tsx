@@ -281,10 +281,21 @@ export function Empty({ message }: { message: string }) {
 
 /* ── Table shell ───────────────────────────────────────────────────────────── */
 
-export function TableShell({ children }: { children: ReactNode }) {
+/**
+ * `dense` tightens every cell's side padding from 16px to 12px, for a table with many columns.
+ * On the activity table that is 88px back across eleven columns - the difference between fitting
+ * a laptop-width card and scrolling sideways. Applied from here, as a descendant rule, because
+ * Th and Td carry px-4 themselves and a second px-* class on the same element would be decided by
+ * stylesheet order rather than intent. Horizontal scroll stays as the fallback for small screens.
+ */
+export function TableShell({ children, dense = false }: { children: ReactNode; dense?: boolean }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-collapse text-[13px]">{children}</table>
+      <table
+        className={`w-full border-collapse text-[13px] ${dense ? "[&_td]:px-3 [&_th]:px-3" : ""}`}
+      >
+        {children}
+      </table>
     </div>
   );
 }
