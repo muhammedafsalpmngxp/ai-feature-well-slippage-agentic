@@ -6,7 +6,31 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# The backend folder. Every other path the backend owns (sql/, out/, .cache/, logs/rework.jsonl)
+# is already resolved from its own file's location, so it lands in the same place however the
+# process was started. .env and relative LOG_FILE values are anchored here for the same reason.
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ⚠ EXPLICIT PATH, NOT load_dotenv()'s own search. With no argument it guesses where to start
+# looking, and the guess depends on how Python was launched: from a script it starts beside this
+# file, but from `python -c`, a REPL or a notebook it starts from the CURRENT DIRECTORY. Run from
+# the repo root, that search walks upward, never enters backend/, finds nothing - and the backend
+# carries on with every DB setting blank. Variables already set in the environment still win.
+load_dotenv(os.path.join(_ROOT, ".env"))
+
+
+def _path(name: str, default: str) -> str:
+    """A path setting, relative values resolved against the backend folder, empty kept empty.
+
+    Resolving against the current directory instead made the log land wherever the server was
+    launched from - backend/logs/ from `cd backend`, a stray logs/ at the repo root from anywhere
+    else - so a run started from the dashboard and one started by hand could log to different
+    files. Empty stays empty: that is the documented way to turn the file log off.
+    """
+    value = _get(name, default)
+    if value and not os.path.isabs(value):
+        value = os.path.join(_ROOT, value)
+    return value
 
 
 def _get(name: str, default: str = "") -> str:
@@ -144,7 +168,7 @@ class Settings:
     # Shared log file, so a run can be followed from a terminal other than the one that started
     # it - which is the only way to watch a run triggered from the dashboard, since that one is
     # a subprocess of the API. Set LOG_FILE= (empty) to disable and log to the console only.
-    log_file: str = field(default_factory=lambda: _get("LOG_FILE", "logs/pipeline.log"))
+    log_file: str = field(default_factory=lambda: _path("LOG_FILE", "logs/pipeline.log"))
 
 
 settings = Settings()

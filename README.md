@@ -6,13 +6,13 @@ well portfolio, using LangGraph agents that write and verify their own SQL.
 The design splits slow, expensive reasoning from fast serving:
 
 ```
-main.py     schema changed:  agents write + verify SQL, then freeze it   ~90 s, LLM tokens
-   │        schema stable:   run the frozen SQL from sql/                ~25 s, one LLM call
-   │        writes sql/*.sql (committed)  out/*.csv  out/brief.md
+backend/main.py   schema changed:  agents write + verify SQL, then freeze it   ~90 s, LLM tokens
+   │              schema stable:   run the frozen SQL from sql/                ~25 s, one LLM call
+   │              writes sql/*.sql (committed)  out/*.csv  out/brief.md
    ▼
-api/        runs that verified SQL on request                            ~2 s, no LLM
+backend/api/      runs that verified SQL on request                            ~2 s, no LLM
    ▼
-web/        Next.js dashboard
+frontend/         Next.js dashboard
 ```
 
 The API never calls a model. Once a query is verified it is a deterministic artefact, so serving
@@ -20,6 +20,36 @@ a page means running it, not re-deriving it.
 
 The same reasoning applies to the pipeline itself, which is why verified SQL is **frozen** into
 `sql/` and reused until the database's *structure* changes.
+
+## Project layout
+
+```
+well/
+├── backend/                  Python: agents, pipeline, API
+│   ├── main.py               the pipeline CLI
+│   ├── api/                  FastAPI, serves results of the frozen SQL, never calls a model
+│   ├── app/                  agents, LangGraph graph, DB introspection, config
+│   ├── domain/               business_rules 1.md, milestone_rules 1.md (loaded into every prompt)
+│   ├── sql/                  frozen, verified queries (committed)
+│   ├── requirements.txt
+│   ├── .env                  DB + OpenAI settings (git-ignored)
+│   └── out/ logs/ .cache/    run outputs, logs, schema cache (git-ignored)
+├── frontend/                 Next.js dashboard
+│   ├── app/  components/  lib/
+│   └── package.json
+└── .venv/                    Python environment (git-ignored)
+```
+
+The two halves only meet over HTTP: the frontend proxies `/api/*` to the backend on port 8000
+(`frontend/next.config.ts`, override with `API_URL`), so either can move or be deployed alone.
+
+Everything the backend reads or writes (`.env`, `sql/`, `out/`, `.cache/`, `logs/`, `domain/`)
+is resolved from **its own folder**, not from wherever it was started. The one exception is an
+explicit `--out DIR`, which like any CLI argument is relative to where you run it. Paths in the
+rest of this file are relative to `backend/` unless they say otherwise.
+
+⚠ `domain/` is not optional. If the two rule documents are missing, the agents do not fail: they
+log a warning and run **without the business rules**, which is much harder to notice.
 
 ## The three queries
 
@@ -35,7 +65,7 @@ Every query is bounded by the *fleet* or by *one well*, never by accumulated tas
 is why none of them can be silently trimmed by the row cap. `activity_delay` takes the well as a
 **bound parameter**, so the API can drill into any well without re-running the agents.
 
-## The frozen query store (`sql/`)
+## The frozen query store (`backend/sql/`)
 
 Authoring and verifying three queries costs minutes of LLM latency and real tokens. What it
 produces is deterministic: a SELECT proved correct against one specific schema. Nothing about it
@@ -64,7 +94,7 @@ columns with declared types, constraints. Deliberately **not** row counts:
 
 Keying the freeze on the schema cache's fingerprint instead would have discarded every query on
 every ingest — in a database that loads daily, nothing would ever be reused. The two hashes are
-`structure_fingerprint` and `_fingerprint` in `app/db/introspect.py`.
+`structure_fingerprint` and `_fingerprint` in `backend/app/db/introspect.py`.
 
 `sql/` is **committed**, unlike `out/`. It is schema rather than data — a SELECT naming columns,
 with no well ids or dates in it — it is the artefact a reviewer reads to see what changed about
@@ -117,7 +147,7 @@ detect ──> decide ──┤                                ├──> synthe
 
 ## Running it
 
-**1. Configure `.env`** (git-ignored):
+**1. Configure `backend/.env`** (git-ignored):
 
 ```
 DB_SERVER=…
@@ -154,6 +184,7 @@ the SQL text was checked and never its output, and the run warns when that happe
 **2. Generate or reuse the queries:**
 
 ```bash
+cd backend
 pip install -r requirements.txt
 python main.py --out out                 # reuses sql/ when the schema is unchanged
 python main.py --frozen                  # freeze state, no LLM calls
@@ -164,17 +195,24 @@ python main.py --sql                     # print the SQL that ran
 python main.py --rework                  # what rework has cost, worst cause first
 ```
 
+Run these from `backend/`. `--out` is relative to the current folder like any CLI argument, and
+the API reads `backend/out/`, so a run started elsewhere writes its brief somewhere the dashboard
+never looks.
+
 Exit code is non-zero unless **every** query produced a verified result, so a scheduled run fails
 visibly rather than quietly reporting half the picture.
 
 **3. Serve it:**
 
 ```bash
+cd backend
 python -m uvicorn api.main:app --port 8000
 ```
 
 ```bash
-cd web && npm install && npm run dev
+cd frontend
+npm install
+npm run dev
 ```
 
 Open http://localhost:3000. The dashboard is white by default, with a dark theme behind the header
@@ -185,12 +223,12 @@ To watch a run triggered from the dashboard, follow the shared log from its own 
 pipeline runs as a subprocess of the API, so its output appears in neither console:
 
 ```bash
-Get-Content -Wait -Tail 40 logs\pipeline.log
+Get-Content -Wait -Tail 40 backend\logs\pipeline.log
 ```
 
 ## Per-agent tuning
 
-Set in `app/llm.py`, one dict, keyed by agent:
+Set in `backend/app/llm.py`, one dict, keyed by agent:
 
 | Agent | temp | effort | verbosity | Why |
 |---|---|---|---|---|
@@ -218,16 +256,17 @@ Measured, ~228k input tokens: **79% is the rule documents** (`milestone_rules.md
 every call), 4% is row data. Raising `MAX_ROWS` costs nothing — row previews are capped separately
 at 15 (verifier) and 40 (synthesizer) while the Python tallies read every row.
 
-`logs/rework.jsonl` records every execution failure and verifier rejection with its SQL, so the
+`backend/logs/rework.jsonl` records every execution failure and verifier rejection with its SQL, so the
 prompts can be fixed against real causes rather than guesses; `--rework` summarises it.
 
 ## Authority
 
-`business_rules 1.md` and `milestone_rules 1.md` are authoritative and loaded into every prompt.
+`backend/domain/business_rules 1.md` and `backend/domain/milestone_rules 1.md` are authoritative
+and loaded into every prompt.
 Where a document names something the detected schema lacks, **the schema wins**.
 
 Two values are **assumptions**, not recorded decisions — both isolated in
-`app/graph/scenarios.py` with `⚠ ASSUMPTION` markers, because the contract that should specify
+`backend/app/graph/scenarios.py` with `⚠ ASSUMPTION` markers, because the contract that should specify
 them was deleted:
 
 - the milestone **status vocabulary** (one set, as §2 requires)
@@ -235,8 +274,9 @@ them was deleted:
 
 ## Caveats
 
-- The dashboard is only as current as the last run; `/api/status` reports its age, and the
-  per-query freeze state (`current` / `stale` / `hand-edited` / `unverified` / `missing`).
+- The dashboard's figures are re-read from the database on every visit (cached 60 s), so they
+  are never older than a minute. What ages is the *SQL*: `/api/status` reports when the queries
+  were last written and verified, and the per-query freeze state (`current` / `stale` / `hand-edited` / `unverified` / `missing`).
 - `schema_drifted` means *a re-run would author new SQL* — a structural change, not a data load.
   It is `null`, never `false`, when the check could not run: unknown is not the same as fine.
 - A verified query is verified *as written*, not proven correct for all future data.
