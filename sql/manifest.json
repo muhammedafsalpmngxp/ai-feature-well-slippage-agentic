@@ -9,6 +9,8 @@
         "activity_code",
         "wbs",
         "crew_code",
+        "crew_id",
+        "crew_type_id",
         "target_start",
         "target_end",
         "actual_start",
@@ -21,20 +23,36 @@
         "schedule_risk",
         "progress_percent"
       ],
-      "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T11:40:09+00:00",
+      "fingerprint": "5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458",
+      "frozen_at": "2026-09-25T05:44:59+00:00",
       "row_count": 88,
-      "sql_sha256": "ecbb83a9b0d8860113adf57bba1806526db7aa169b515733abda2c15db36d777"
+      "sql_sha256": "c5c635828d52efa539694d044619a873b7c7fdd5a598ce1c4a81c527cd6992c2"
     },
     "activity_summary": {
       "columns": [
         "well_id",
         "delayed_activity_codes"
       ],
-      "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T11:40:09+00:00",
-      "row_count": 186,
-      "sql_sha256": "573442281bfc4bc6b9a41b9d19259a815c66bf23a3e73f9265dd3a819cf37d52"
+      "fingerprint": "5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458",
+      "frozen_at": "2026-09-25T05:44:59+00:00",
+      "row_count": 189,
+      "sql_sha256": "4bdb1e89a233f9af9755436e545f2b2a762a2727285ede6af1959abd11c40032"
+    },
+    "crew_availability": {
+      "columns": [
+        "crew_id",
+        "crew_type_id",
+        "open_tasks",
+        "in_progress_tasks",
+        "overdue_tasks",
+        "wells_active",
+        "latest_action_on",
+        "availability_status"
+      ],
+      "fingerprint": "5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458",
+      "frozen_at": "2026-09-25T05:44:59+00:00",
+      "row_count": 1253,
+      "sql_sha256": "14d55be69d69c7dcec4c36fcf1c4c08bd342418aecfe6bf3323cda6c11b89603"
     },
     "well_slippage": {
       "columns": [
@@ -57,10 +75,10 @@
         "rig_off_variance_days",
         "well_slippage_status"
       ],
-      "fingerprint": "c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f",
-      "frozen_at": "2026-09-18T11:40:09+00:00",
-      "row_count": 212,
-      "sql_sha256": "a5e1bc0cb3dd204b6f3c4f42ab51d6850d9419d105321700cce08904ef9c9696"
+      "fingerprint": "5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458",
+      "frozen_at": "2026-09-25T05:44:59+00:00",
+      "row_count": 222,
+      "sql_sha256": "ecd5702037859ca7bde2f2d8577c7f8b60c2d9b3e32f48f57c8188795a3d191c"
     }
   },
   "version": 1

@@ -1,4 +1,4 @@
-"""Run all three queries concurrently.
+"""Run every query concurrently.
 
 WHY. Measured sequentially, a three-query run was ~340-590s of which 96% was LLM latency and
 almost none was the database. The three queries do not interact, so most of that was one agent
@@ -33,8 +33,10 @@ from app.observability import get_logger
 log = get_logger()
 
 # Bounds concurrency to the number of queries. Not a performance knob - it exists so that adding
-# a fourth query later does not silently become a four-way burst against the model provider.
-MAX_WORKERS = 3
+# a query does not silently become a bigger burst against the model provider. Raised from 3 to 4
+# DELIBERATELY when crew_availability was added: at 3 the fourth query waited for a free slot,
+# adding its whole authoring time (~20s) to every run. A fifth query should be the same decision.
+MAX_WORKERS = 4
 
 
 def _empty_result(error: str) -> dict:

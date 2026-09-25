@@ -116,7 +116,15 @@ def reuse_node(state: SlippageState) -> dict:
 
     for key in keys:
         query = available.get(key)
-        if query is None or not query.is_current(fingerprint):
+        spec = queries.QUERIES_BY_KEY[key]
+        # A changed output contract makes a freeze stale just as a changed schema does: the SQL
+        # still runs, but returns the old columns. frozen.partition() has already routed such a
+        # query to the planner; skipping it here stops it being executed only to fail the check.
+        if (
+            query is None
+            or not query.is_current(fingerprint)
+            or not query.matches_contract(spec.contract)
+        ):
             continue
         if query.hand_edited:
             log.warning(
@@ -124,7 +132,6 @@ def reuse_node(state: SlippageState) -> dict:
                 "it is no longer the text the Verifier approved, so it is reported unverified",
                 key,
             )
-        spec = queries.QUERIES_BY_KEY[key]
         started = time.perf_counter()
 
         # The executor node, reused as-is rather than reimplemented: it already binds the well

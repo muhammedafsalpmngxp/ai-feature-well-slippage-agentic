@@ -52,6 +52,13 @@ export interface TaskRow {
   activity_code: string | null;
   wbs: string | null;
   crew_code: string | null;
+  /**
+   * Raw ids from the task record: which crew was assigned, and its type. Crew TYPE decides which
+   * crews can take over a late task. Optional because an activity query frozen before these
+   * columns existed does not return them - the next pipeline run re-authors it.
+   */
+  crew_id?: number | string | null;
+  crew_type_id?: number | string | null;
   target_start: string | null;
   target_end: string | null;
   actual_start: string | null;
@@ -63,6 +70,149 @@ export interface TaskRow {
   execution_status: string | null;
   schedule_risk: ScheduleRisk | null;
   progress_percent: number | null;
+}
+
+/** One crew, fleet-wide, from the crew_availability query. */
+export interface CrewRow {
+  crew_id: number | string;
+  crew_type_id: number | string | null;
+  open_tasks: number;
+  in_progress_tasks: number;
+  overdue_tasks: number;
+  wells_active: number;
+  latest_action_on: string | null;
+  /** AVAILABLE = no in-progress task is recorded for the crew. Not leave, location or shift. */
+  availability_status: "AVAILABLE" | "BUSY" | string;
+}
+
+export type CauseVerdict = "yes" | "possibly" | "no" | "unknown";
+
+/** What the suggestion agent concluded. Advice, not a verified figure - render it as such. */
+export interface Advice {
+  summary: string;
+  caused_by_other_delay: CauseVerdict;
+  causes: { cause: string; evidence: string; confidence: string }[];
+  actions: {
+    action: string;
+    crew_id: number | string | null;
+    rationale: string;
+    /** Set by the API when the agent named a crew it was not given as a candidate. */
+    crew_unverified?: boolean;
+  }[];
+  checks: string[];
+  caveats: string[];
+}
+
+export interface MilestoneEvidence {
+  milestone: string;
+  owner: string;
+  deadline: string | null;
+  actual: string | null;
+  status: string | null;
+  variance_days: number | null;
+}
+
+export type WellDelayVerdict = "yes" | "at_risk" | "no" | "unknown";
+
+/** What the agent concluded about the WHOLE well. Advice, not a verified figure. */
+export interface WellAdvice {
+  description: string;
+  delayed: WellDelayVerdict;
+  why_delayed: { reason: string; evidence: string; owner: string; confidence: string }[];
+  actions: {
+    priority: number;
+    action: string;
+    crew_type_id: number | string | null;
+    crew_id: number | string | null;
+    rationale: string;
+    /** Set by the API when the agent named a crew / crew type it was not given. */
+    crew_unverified?: boolean;
+    type_unverified?: boolean;
+  }[];
+  checks: string[];
+  caveats: string[];
+}
+
+/** One crew type's share of a well's late work, with the crews that could take it over. */
+export interface CrewTypeGroup {
+  crew_type_id: string | null;
+  late_tasks: number;
+  worst_overrun_days: number | null;
+  wbs: string[];
+  unassigned_late_tasks: number;
+  assigned_crews: CrewRow[];
+  available_count: number;
+  busy_count: number;
+  type_total: number;
+  candidates: CrewRow[];
+}
+
+/** POST /api/wells/{id}/suggest-well: why this well is delayed, beside the evidence behind it. */
+export interface WellSuggestion {
+  well_id: string;
+  generated_at: string;
+  model: string;
+  cached: boolean;
+  advice: WellAdvice | null;
+  raw: string | null;
+  evidence: {
+    well: Suggestion["evidence"]["well"];
+    tasks: {
+      total: number;
+      late: number;
+      red: number;
+      amber: number;
+      not_started_late: number;
+      in_progress: number;
+      completed: number;
+      due_today: number;
+    };
+    late_by_wbs: {
+      wbs: string;
+      late_tasks: number;
+      red: number;
+      not_started_late: number;
+      worst_overrun_days: number | null;
+      crew_type_ids: string[];
+    }[];
+    late_by_crew_type: CrewTypeGroup[];
+    most_urgent: Partial<TaskRow>[];
+    crew_note: string | null;
+  };
+}
+
+/** POST /api/wells/{id}/suggest: the advice, beside the verified evidence it was reasoned from. */
+export interface Suggestion {
+  well_id: string;
+  task_code: string;
+  generated_at: string;
+  model: string;
+  cached: boolean;
+  /** Null when the reply was not the structure asked for; `raw` then holds what was said. */
+  advice: Advice | null;
+  raw: string | null;
+  evidence: {
+    task: Partial<TaskRow>;
+    earlier_late_tasks: Partial<TaskRow>[];
+    same_wbs_late_tasks: Partial<TaskRow>[];
+    well: {
+      /** true: in the slippage listing. false: no milestone failed. null: listing unavailable. */
+      listed: boolean | null;
+      headline: string | null;
+      milestones: MilestoneEvidence[];
+      note: string | null;
+    };
+    crew: {
+      crew_type_id: number | string | null;
+      assigned_crew_id: number | string | null;
+      assigned: CrewRow | null;
+      available: CrewRow[];
+      available_count: number;
+      busy_count: number;
+      type_total: number;
+      note: string | null;
+    };
+  };
 }
 
 export interface PipelineStatus {

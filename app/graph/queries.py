@@ -1,10 +1,15 @@
-"""The two queries this project produces, and the vocabularies they report in.
+"""The queries this project produces, and the vocabularies they report in.
 
 Well slippage and activity delay are DIFFERENT QUESTIONS at different grains, and
 milestone_rules §5.11 is explicit that one query must not answer both:
 
-    well slippage   - which WELLS missed a contractual milestone   - one row per well
-    activity delay  - which WORK is running late, and whose        - one row per task
+    well slippage      - which WELLS missed a contractual milestone    - one row per well
+    activity summary   - how much delayed activity each well carries   - one row per well
+    activity delay     - which WORK is running late, and whose         - one row per task
+    crew availability  - which CREWS carry open work, and which do not - one row per crew
+
+The fourth exists for the suggestion agent (api/advisor.py): when a task is late, it is what
+says which crews of the same crew type are free. It describes crews, not wells or tasks.
 
 A well can be on milestone track while its tasks slip, and the reverse. Each spec below
 carries its own output contract, which the Verifier checks mechanically in both directions.
@@ -76,6 +81,20 @@ RISK_GREEN = "GREEN"
 RISK_STATUSES = (RISK_RED, RISK_AMBER_START_SLIPPING, RISK_AMBER_START_DELAYED, RISK_GREEN)
 
 
+# -- Crew availability vocabulary ----------------------------------------------
+# ⚠ ASSUMPTION, NOT A RECORDED DECISION. Neither rule document defines when a crew is
+# "available", and the database holds no roster, leave, shift or location data. This is the
+# narrowest definition the data can actually support: a crew is AVAILABLE when no task it is
+# assigned to is IN PROGRESS (started, not finished) on a well still in progress. It says nothing
+# about whether the crew is on site, off leave, or anywhere near a given well - the suggestion
+# agent is told so, and says so. Change the strings or the definition here and in the guidance
+# below; nothing else needs touching.
+CREW_AVAILABLE = "AVAILABLE"
+CREW_BUSY = "BUSY"
+
+CREW_STATUSES = (CREW_AVAILABLE, CREW_BUSY)
+
+
 @dataclass(frozen=True)
 class QuerySpec:
     key: str
@@ -145,6 +164,8 @@ ACTIVITY_DELAY = QuerySpec(
         "activity_code",
         "wbs",
         "crew_code",
+        "crew_id",
+        "crew_type_id",
         "target_start",
         "target_end",
         "actual_start",
@@ -204,6 +225,14 @@ TASK ARITHMETIC - follow milestone_rules §5, and §5.11 for the order of the ch
    The exact columns, the legacy text-column cast, and the Old/New pitfall are in
    business_rules §3. Follow it. Never guess a WBS or use the activity id as one.
    Use LEFT joins so unmapped work stays visible rather than vanishing from the listing.
+
+   crew_id and crew_type_id are DIFFERENT from crew_code. They are the raw ids recorded on the
+   task record itself: which crew was assigned, and what type of crew it is. The suggestion
+   agent matches a late task to free crews on crew_type_id, so read both from the REDUCED latest
+   record (step 1) - never from the raw history, where an older record may name a crew that has
+   since been replaced. Return them as raw ids and do NOT join any crew or crew-type table to
+   resolve them (milestone_rules §11: the crew table has no primary key, so the join multiplies
+   every task). NULL is correct where the record carries none.
 
 7. SCOPE: ONE WELL. Filter to the well id supplied in the TARGET WELL line of your request,
    comparing it correctly for the declared types on both sides. Also keep the in-progress
@@ -292,9 +321,84 @@ population filter.
 )
 
 
+# -- 4. Crew availability --------------------------------------------------------
+# The crew side of "how could this late task be recovered". Fleet-wide, one row per crew, so it
+# is bounded by the number of crews rather than the task count and is never trimmed by the row
+# cap - the same property that keeps the other fleet queries complete. It takes no parameter:
+# the suggestion agent filters it to the late task's crew_type_id in Python, so one frozen query
+# serves every task on every well.
+
+CREW_AVAILABILITY = QuerySpec(
+    key="crew_availability",
+    label="Crew availability",
+    question="For every crew on the current task records, what type of crew is it, how much open "
+             "work does it carry, and is it free right now?",
+    grain="one row per crew (bounded by the number of crews, never by the task count)",
+    contract=(
+        "crew_id",
+        "crew_type_id",
+        "open_tasks",
+        "in_progress_tasks",
+        "overdue_tasks",
+        "wells_active",
+        "latest_action_on",
+        "availability_status",
+    ),
+    guidance="""\
+WHAT THIS IS FOR. When a task is late, the question is which crews of the SAME crew type could
+take it on. This query answers the crew side of that, fleet-wide, one row per crew; the matching
+to a particular task happens later, on crew_type_id. So crew_type_id must be right, and every
+count must describe CURRENT work, not history.
+
+1. REDUCE THE HISTORY FIRST - the same reduction as activity_delay. Latest record per task:
+   ROW_NUMBER() OVER (PARTITION BY the TRIMMED task well id, the TRIMMED task code ORDER BY
+   <action date> DESC, <record id> DESC), keep rn = 1. Read EVERY column below from that reduced
+   set. The raw table keeps one record per task per update, so counting it inflates every figure
+   (measured: 33,820 records for 14,243 tasks) and credits a crew that was replaced on a task
+   with work it no longer holds.
+
+2. THE CREW UNIVERSE is every non-NULL crew id on those REDUCED records, on ANY well. Filter the
+   NULL crew ids AFTER the reduction, never before it - filtering first lets an older record
+   that named a crew stand in for a latest record that names none.
+
+3. crew_type_id is the type on the crew's MOST RECENT reduced record (latest action date, then
+   highest record id). EXACTLY ONE ROW PER CREW: do NOT group by crew type as well, or a crew
+   whose type changed between records splits into two rows that can disagree about whether it
+   is free. Return the raw id; do NOT join a crew or crew-type table to resolve it
+   (milestone_rules §11 - the crew table has no primary key, so that join multiplies rows).
+
+4. WORKLOAD counts only OPEN work on wells STILL IN PROGRESS - the same population filter as the
+   other queries (the well's completion date is absent). Join task -> well with explicit casts on
+   BOTH sides: the two well keys are declared different types. A task left open on a completed
+   well is a stale record, not current work, and must not make a crew look busy.
+   A crew whose every task is finished, or sits on a completed well, STILL GETS A ROW, with zero
+   counts. Those crews are the likeliest to be free - dropping them hides the answer.
+   - open_tasks:        reduced tasks on in-progress wells with no actual end
+   - in_progress_tasks: of those, the ones with an actual start (started, not finished)
+   - overdue_tasks:     of the open ones, those whose planned end is before today
+   - wells_active:      DISTINCT wells among the open ones
+   "Has not happened" is NULL in this database (§5.2) - test IS NULL, never invent a cutoff.
+   Every count is 0, never NULL, for a crew with no open work.
+
+5. latest_action_on is the most recent action date across the crew's reduced records, any well.
+   It shows how recently the crew was recorded working at all, so a reader can tell a crew that
+   is idle today from one nobody has recorded for a year.
+
+6. availability_status: {crew_statuses}.
+   {crew_available} when in_progress_tasks = 0, otherwise {crew_busy}. Derive in_progress_tasks
+   once and test that result, rather than restating the condition.
+
+7. No TOP, no well filter, no parameter. The result is bounded by the number of crews.
+
+8. ORDER BY crew_type_id, then {crew_available} before {crew_busy}, then in_progress_tasks
+   ascending, then overdue_tasks ascending, then crew_id - so within a crew type the crews with
+   the most room come first.""",
+)
+
+
 # ORDER MATTERS. activity_summary runs BEFORE activity_delay so that, when no well is given
 # on the command line, the worst well can be taken from the summary and drilled into.
-QUERIES: tuple[QuerySpec, ...] = (WELL_SLIPPAGE, ACTIVITY_SUMMARY, ACTIVITY_DELAY)
+QUERIES: tuple[QuerySpec, ...] = (WELL_SLIPPAGE, ACTIVITY_SUMMARY, ACTIVITY_DELAY, CREW_AVAILABILITY)
 QUERIES_BY_KEY = {q.key: q for q in QUERIES}
 DEFAULT_KEYS = tuple(q.key for q in QUERIES)
 
@@ -307,16 +411,19 @@ def guidance_for(spec: QuerySpec) -> str:
         .replace("{end_statuses}", " | ".join(END_STATUSES))
         .replace("{execution_statuses}", " | ".join(EXECUTION_STATUSES))
         .replace("{risk_statuses}", " | ".join(RISK_STATUSES))
+        .replace("{crew_statuses}", " | ".join(CREW_STATUSES))
+        .replace("{crew_available}", CREW_AVAILABLE)
+        .replace("{crew_busy}", CREW_BUSY)
     )
 
 
 def describe() -> str:
-    """Both queries as one prompt block, shared by the Planner, Author and Verifier.
+    """Every query as one prompt block, shared by the Planner, Author and Verifier.
 
     One rendering for all three, so they cannot form different ideas of what each query is -
     the failure mode that lets an author satisfy a verifier about the wrong thing.
     """
-    lines = ["THE TWO QUERIES THIS PROJECT PRODUCES (milestone_rules §5.11):", ""]
+    lines = ["THE QUERIES THIS PROJECT PRODUCES (milestone_rules §5.11 for the first three):", ""]
     for index, spec in enumerate(QUERIES, 1):
         lines.append(str(index) + ". " + spec.key + " - " + spec.label)
         lines.append("   answers: " + spec.question)
@@ -326,6 +433,7 @@ def describe() -> str:
     lines.append(
         "They are SEPARATE questions. A well can be on milestone track while its tasks slip, and "
         "the reverse. A delayed task is evidence that THAT TASK is slipping - it does not by "
-        "itself prove the task is why the well is behind."
+        "itself prove the task is why the well is behind. crew_availability describes CREWS, not "
+        "wells or tasks: a crew being free says nothing about why any task is late."
     )
     return "\n".join(lines)

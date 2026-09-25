@@ -176,11 +176,17 @@ def _render_result(key: str, result: dict, has_summary: bool = False) -> str:
             "was not measured."
         )
 
-    parts = [
+    header = (
         "### " + label + " - " + str(len(rows)) + " row(s)"
-        + (" (CAPPED: more matched than are shown)" if result.get("truncated") else ""),
-        render_rows(columns, rows, limit=EXPLAIN_ROWS),
-    ]
+        + (" (CAPPED: more matched than are shown)" if result.get("truncated") else "")
+    )
+    if key == "crew_availability":
+        # One row per crew, over a thousand of them. A 40-row sample tells the brief nothing it
+        # needs: it states only the split, from the exact tally below. The per-crew detail is for
+        # the suggestion agent, which reads it through the API.
+        parts = [header]
+    else:
+        parts = [header, render_rows(columns, rows, limit=EXPLAIN_ROWS)]
 
     if key == "well_slippage":
         tally = _count_by(
@@ -209,6 +215,13 @@ def _render_result(key: str, result: dict, has_summary: bool = False) -> str:
             per_well = _per_well_activity(columns, rows)
             if per_well:
                 parts.append(per_well)
+    elif key == "crew_availability":
+        tally = _count_by(
+            columns, rows, "availability_status",
+            "EXACT COUNTS by availability (every returned row - use these, do not recount):",
+        )
+        if tally:
+            parts.append(tally)
 
     if not result.get("verified"):
         reason = result.get("feedback", "")

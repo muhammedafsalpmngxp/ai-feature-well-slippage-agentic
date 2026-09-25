@@ -15,25 +15,65 @@ api/        runs that verified SQL on request                            ~2 s, n
 web/        Next.js dashboard
 ```
 
-The API never calls a model. Once a query is verified it is a deterministic artefact, so serving
-a page means running it, not re-deriving it.
+The API serves the verified SQL; it does not re-derive it. Once a query is verified it is a
+deterministic artefact, so serving a page means running it. The one endpoint that calls a model is
+the **suggestion agent** (below): it reasons over those same verified results and never writes SQL.
 
 The same reasoning applies to the pipeline itself, which is why verified SQL is **frozen** into
 `sql/` and reused until the database's *structure* changes.
 
-## The three queries
+## The four queries
 
 | Query | Answers | Grain | Rows |
 |---|---|---|---|
 | `well_slippage` | which wells failed a contractual milestone | one per well | 216 |
-| `activity_summary` | how many activity codes are delayed per well | one per well | 184 |
-| `activity_delay` | which tasks are late on **one** well | one per task | 88 |
+| `activity_summary` | how many activity codes are delayed per well | one per well | 186 |
+| `activity_delay` | which tasks are late on **one** well, with each task's crew id and crew type id | one per task | 88 |
+| `crew_availability` | every crew's type, open work, and whether it is free | one per crew | not yet run |
 
 Row counts are from the current database; they move with the data, not with the code.
 
-Every query is bounded by the *fleet* or by *one well*, never by accumulated task history — which
-is why none of them can be silently trimmed by the row cap. `activity_delay` takes the well as a
-**bound parameter**, so the API can drill into any well without re-running the agents.
+Every query is bounded by the *fleet*, by *one well* or by the *number of crews*, never by
+accumulated task history — which is why none of them can be silently trimmed by the row cap.
+`activity_delay` takes the well as a **bound parameter**, so the API can drill into any well
+without re-running the agents.
+
+⚠ **"Available" is an assumption, not a recorded rule.** Neither rule document defines it, and the
+database holds no roster, leave, shift or location data. `crew_availability` calls a crew
+`AVAILABLE` when no task it is assigned to is *in progress* on a well still in progress — nothing
+more. It is marked `⚠ ASSUMPTION` in `app/graph/queries.py`. Also note that about two thirds of
+current task records carry no crew id, so crew workload is understated.
+
+## Recovery suggestions
+
+On a well's page there are two ways to ask the suggestion agent (`api/advisor.py`):
+
+- **Suggest recovery**, above the task list (`POST /api/wells/{id}/suggest-well`): *why is this
+  well delayed, and how could it be overcome?* It starts from the failed milestones and their
+  owners, then the late work grouped by WBS and by **crew type**, and proposes actions using free
+  crews of each type.
+- **Suggest**, on every late task (`POST /api/wells/{id}/suggest?task_code=…`), which asks two
+  questions about that one task:
+
+1. **Is this task late because of another delay?** Judged from timing — late tasks on the same well
+   that were due to finish before this one started, late work in the same WBS — and from the
+   well's milestones and the lifecycle in `business_rules` §6–§7 (a late PDO pegging sheet or FLAF
+   gates Al Tasnim's construction). The data holds no dependency links, so this is inference, and
+   the agent says so.
+2. **How could it be recovered?** Using only crews of the task's **crew type** that
+   `crew_availability` shows as free, ranked by least open work.
+
+What keeps a model's opinion apart from the verified figures:
+
+- **The evidence is selected in Python** from the frozen queries. The agent reasons over it; it
+  runs no SQL and counts nothing.
+- **The answer is returned beside that evidence**, and the page shows the two side by side.
+- **It may only name crews it was given.** A crew id outside the candidate list is flagged as
+  unverified on the page.
+- Answers are **cached per task** until the next pipeline run. "Ask again" forces a new one.
+
+This reverses the brief's rule against recommending manpower changes *for this panel only*: the
+synthesizer still recommends nothing, and every suggestion is labelled as AI-generated.
 
 ## The frozen query store (`sql/`)
 
@@ -198,6 +238,7 @@ Set in `app/llm.py`, one dict, keyed by agent:
 | sql_author | 0.0 | medium | low | hardest task; an error costs a full rewrite cycle |
 | verifier | 0.0 | medium | low | the gate — its misses are *silent* |
 | synthesize | 0.2 | low | medium | derives nothing; the counts are precomputed |
+| advisor | 0.2 | high | medium | serve-time suggestion agent; reasons about knock-on causes — drop to medium if the button feels slow |
 
 ⚠ `sql_author` and `verifier` were lowered from **high** to cut latency, and measurement says that
 is a net loss: at high, `well_slippage` was written correctly on one attempt (82 s to verified); at

@@ -21,6 +21,11 @@ needs to serve the dashboard without an API key, and the thing to read in a diff
 asks what changed about how slippage is calculated. out/ holds the products of one run - rows,
 a brief - which are reproducible from these plus the database.
 
+A CHANGED OUTPUT CONTRACT INVALIDATES A FREEZE TOO. When a query's spec gains or loses a column
+(activity_delay gaining crew_id and crew_type_id, say), the frozen SQL still runs perfectly - and
+returns the old columns. So a freeze is only current when the columns it was frozen with are the
+columns its spec now requires (FrozenQuery.matches_contract); otherwise it is re-authored.
+
 HAND EDITING IS ALLOWED AND REPORTED. The manifest records a hash of each body, so an edit made
 after freezing is visible (`python main.py --frozen`) instead of passing silently as something
 the Verifier approved. It is not overwritten or refused: a person correcting a query is doing
@@ -71,6 +76,20 @@ class FrozenQuery:
     def is_current(self, live_fingerprint: str) -> bool:
         """Whether this query was verified against the schema that is live right now."""
         return bool(live_fingerprint) and self.fingerprint == live_fingerprint
+
+    def matches_contract(self, expected) -> bool:
+        """Whether this query was frozen with the columns its spec requires NOW.
+
+        A spec that gained or lost a column leaves the frozen SQL runnable but wrong: it returns
+        the old columns. That makes the freeze stale exactly as a schema change does.
+
+        No recorded columns (a file dropped in by hand) is not treated as a mismatch: it cannot
+        be judged here, and the reuse step re-checks the columns it actually gets back, so
+        nothing with the wrong shape can slip through either way.
+        """
+        if not self.columns:
+            return True
+        return {c.lower() for c in self.columns} == {str(c).lower() for c in expected}
 
 
 def path_for(key: str) -> str:
@@ -259,11 +278,17 @@ def partition(keys, live_fingerprint: str) -> tuple[list[str], list[str]]:
     live now. An empty `live_fingerprint` makes everything need authoring: not knowing what the
     database looks like is not a reason to trust yesterday's answer.
     """
+    from app.graph import queries as query_specs
+
     reusable, stale = [], []
     frozen = load_all(keys)
     for key in keys:
         query = frozen.get(key)
-        if query is not None and query.is_current(live_fingerprint):
+        if (
+            query is not None
+            and query.is_current(live_fingerprint)
+            and query.matches_contract(query_specs.QUERIES_BY_KEY[key].contract)
+        ):
             reusable.append(key)
         else:
             stale.append(key)
@@ -284,13 +309,18 @@ def describe(live_fingerprint: str = "") -> list[dict]:
             rows.append({
                 "key": spec.key, "label": spec.label, "state": "missing",
                 "frozen_at": None, "fingerprint": None, "columns": [], "row_count": 0,
-                "hand_edited": False,
+                "hand_edited": False, "contract_changed": False,
             })
             continue
+        # Knowable without the database, so it is judged before the fingerprint: a query whose
+        # spec now wants different columns is stale whatever the schema says.
+        contract_changed = not query.matches_contract(spec.contract)
         if query.hand_edited:
             state = "hand-edited"
         elif not query.fingerprint:
             state = "unverified"
+        elif contract_changed:
+            state = "stale"
         elif not live_fingerprint:
             state = "unknown"
         elif query.is_current(live_fingerprint):
@@ -306,5 +336,6 @@ def describe(live_fingerprint: str = "") -> list[dict]:
             "columns": list(query.columns),
             "row_count": query.row_count,
             "hand_edited": query.hand_edited,
+            "contract_changed": contract_changed,
         })
     return rows

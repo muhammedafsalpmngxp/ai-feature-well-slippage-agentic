@@ -93,6 +93,8 @@ def _report_frozen() -> int:
         detail = ""
         if row["state"] == "current":
             detail = "frozen " + stamp + ", " + str(row["row_count"]) + " rows then"
+        elif row["state"] == "stale" and row.get("contract_changed"):
+            detail = "output columns changed since it was frozen - it will be re-authored"
         elif row["state"] == "stale":
             detail = "frozen " + stamp + " against schema " + (row["fingerprint"] or "?")[:16]
         elif row["state"] == "hand-edited":

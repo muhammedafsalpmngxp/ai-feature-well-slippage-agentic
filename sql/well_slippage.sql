@@ -4,9 +4,9 @@
 -- only when the database's structural fingerprint changes; a data load does not
 -- invalidate it. To force a rewrite: python main.py --regenerate
 --
--- Frozen at:  2026-09-18T11:40:09+00:00
--- Schema:     c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f
--- Rows then:  212
+-- Frozen at:  2026-09-25T05:44:59+00:00
+-- Schema:     5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458
+-- Rows then:  222
 -- Contract:   well_id, flaf_deadline, flaf_actual, flaf_status, flaf_variance_days, 
 --             pegging_deadline, pegging_actual, pegging_status, pegging_variance_days, 
 --             rig_on_deadline, rig_on_actual, rig_on_status, rig_on_variance_days, 
@@ -20,144 +20,160 @@
 WITH well_data AS
 (
     SELECT
-        wm.well_id,
-        wm.ex_rig_on_date,
-        wm.flaf_issue_date,
-        wm.pegged_date,
-        wm.rig_on_date,
-        wm.ex_rig_off_date,
-        wm.rig_off_date
-    FROM well.well_master AS wm
-    WHERE wm.eng_completion_date IS NULL
+        w.well_id,
+        w.ex_rig_on_date,
+        w.flaf_issue_date,
+        w.pegged_date,
+        w.rig_on_date,
+        w.ex_rig_off_date,
+        w.rig_off_date,
+        DATEADD(day, -90, w.ex_rig_on_date) AS flaf_deadline,
+        DATEADD(day, -60, w.ex_rig_on_date) AS pegging_deadline,
+        w.ex_rig_on_date AS rig_on_deadline,
+        w.ex_rig_off_date AS rig_off_deadline
+    FROM well.well_master AS w
+    WHERE w.eng_completion_date IS NULL
 ),
-milestone_dates AS
+status_data AS
 (
     SELECT
-        wd.well_id,
-        wd.ex_rig_on_date,
-        DATEADD(day, -90, wd.ex_rig_on_date) AS flaf_deadline,
-        wd.flaf_issue_date AS flaf_actual,
-        DATEADD(day, -60, wd.ex_rig_on_date) AS pegging_deadline,
-        wd.pegged_date AS pegging_actual,
-        wd.ex_rig_on_date AS rig_on_deadline,
-        wd.rig_on_date AS rig_on_actual,
-        wd.ex_rig_off_date AS rig_off_deadline,
-        wd.rig_off_date AS rig_off_actual
-    FROM well_data AS wd
-),
-milestone_status AS
-(
-    SELECT
-        md.well_id,
-        md.ex_rig_on_date,
-        md.flaf_deadline,
-        md.flaf_actual,
+        wd.*,
         CASE
-            WHEN md.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN md.flaf_actual IS NULL AND CAST(GETDATE() AS date) > md.flaf_deadline THEN 'MISSED'
-            WHEN md.flaf_actual IS NULL THEN 'PENDING'
-            WHEN md.flaf_actual < md.flaf_deadline THEN 'AHEAD_OF_SCHEDULE'
-            WHEN md.flaf_actual = md.flaf_deadline THEN 'ON_SCHEDULE'
+            WHEN wd.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN wd.flaf_issue_date IS NULL
+                 AND CAST(GETDATE() AS date) > wd.flaf_deadline THEN 'MISSED'
+            WHEN wd.flaf_issue_date IS NULL THEN 'PENDING'
+            WHEN wd.flaf_issue_date < wd.flaf_deadline THEN 'AHEAD_OF_SCHEDULE'
+            WHEN wd.flaf_issue_date = wd.flaf_deadline THEN 'ON_SCHEDULE'
             ELSE 'DELAYED'
         END AS flaf_status,
-        md.pegging_deadline,
-        md.pegging_actual,
         CASE
-            WHEN md.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN md.pegging_actual IS NULL AND CAST(GETDATE() AS date) > md.pegging_deadline THEN 'MISSED'
-            WHEN md.pegging_actual IS NULL THEN 'PENDING'
-            WHEN md.pegging_actual < md.pegging_deadline THEN 'AHEAD_OF_SCHEDULE'
-            WHEN md.pegging_actual = md.pegging_deadline THEN 'ON_SCHEDULE'
+            WHEN wd.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN wd.pegged_date IS NULL
+                 AND CAST(GETDATE() AS date) > wd.pegging_deadline THEN 'MISSED'
+            WHEN wd.pegged_date IS NULL THEN 'PENDING'
+            WHEN wd.pegged_date < wd.pegging_deadline THEN 'AHEAD_OF_SCHEDULE'
+            WHEN wd.pegged_date = wd.pegging_deadline THEN 'ON_SCHEDULE'
             ELSE 'DELAYED'
         END AS pegging_status,
-        md.rig_on_deadline,
-        md.rig_on_actual,
         CASE
-            WHEN md.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN md.rig_on_actual IS NULL AND CAST(GETDATE() AS date) > md.rig_on_deadline THEN 'MISSED'
-            WHEN md.rig_on_actual IS NULL THEN 'PENDING'
-            WHEN md.rig_on_actual < md.rig_on_deadline THEN 'AHEAD_OF_SCHEDULE'
-            WHEN md.rig_on_actual = md.rig_on_deadline THEN 'ON_SCHEDULE'
+            WHEN wd.ex_rig_on_date IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN wd.rig_on_date IS NULL
+                 AND CAST(GETDATE() AS date) > wd.rig_on_deadline THEN 'MISSED'
+            WHEN wd.rig_on_date IS NULL THEN 'PENDING'
+            WHEN wd.rig_on_date < wd.rig_on_deadline THEN 'AHEAD_OF_SCHEDULE'
+            WHEN wd.rig_on_date = wd.rig_on_deadline THEN 'ON_SCHEDULE'
             ELSE 'DELAYED'
         END AS rig_on_status,
-        md.rig_off_deadline,
-        md.rig_off_actual,
         CASE
-            WHEN md.rig_off_deadline IS NULL THEN 'DATA_QUALITY_ISSUE'
-            WHEN md.rig_off_actual IS NULL AND CAST(GETDATE() AS date) > md.rig_off_deadline THEN 'MISSED'
-            WHEN md.rig_off_actual IS NULL THEN 'PENDING'
-            WHEN md.rig_off_actual < md.rig_off_deadline THEN 'AHEAD_OF_SCHEDULE'
-            WHEN md.rig_off_actual = md.rig_off_deadline THEN 'ON_SCHEDULE'
+            WHEN wd.ex_rig_off_date IS NULL THEN 'DATA_QUALITY_ISSUE'
+            WHEN wd.rig_off_date IS NULL
+                 AND CAST(GETDATE() AS date) > wd.rig_off_deadline THEN 'MISSED'
+            WHEN wd.rig_off_date IS NULL THEN 'PENDING'
+            WHEN wd.rig_off_date < wd.rig_off_deadline THEN 'AHEAD_OF_SCHEDULE'
+            WHEN wd.rig_off_date = wd.rig_off_deadline THEN 'ON_SCHEDULE'
             ELSE 'DELAYED'
-        END AS rig_off_status
-    FROM milestone_dates AS md
+        END AS rig_off_status,
+        CASE
+            WHEN wd.ex_rig_on_date IS NOT NULL
+                 AND (
+                     wd.flaf_issue_date > wd.flaf_deadline
+                     OR (
+                         wd.flaf_issue_date IS NULL
+                         AND CAST(GETDATE() AS date) > wd.flaf_deadline
+                     )
+                 ) THEN 1 ELSE 0
+        END AS flaf_failed,
+        CASE
+            WHEN wd.ex_rig_on_date IS NOT NULL
+                 AND (
+                     wd.pegged_date > wd.pegging_deadline
+                     OR (
+                         wd.pegged_date IS NULL
+                         AND CAST(GETDATE() AS date) > wd.pegging_deadline
+                     )
+                 ) THEN 1 ELSE 0
+        END AS pegging_failed,
+        CASE
+            WHEN wd.ex_rig_on_date IS NOT NULL
+                 AND (
+                     wd.rig_on_date > wd.rig_on_deadline
+                     OR (
+                         wd.rig_on_date IS NULL
+                         AND CAST(GETDATE() AS date) > wd.rig_on_deadline
+                     )
+                 ) THEN 1 ELSE 0
+        END AS rig_on_failed,
+        CASE
+            WHEN wd.ex_rig_off_date IS NOT NULL
+                 AND (
+                     wd.rig_off_date > wd.rig_off_deadline
+                     OR (
+                         wd.rig_off_date IS NULL
+                         AND CAST(GETDATE() AS date) > wd.rig_off_deadline
+                     )
+                 ) THEN 1 ELSE 0
+        END AS rig_off_failed
+    FROM well_data AS wd
 ),
-headline AS
+headline_data AS
 (
     SELECT
-        ms.*,
+        sd.*,
         CASE
-            WHEN ms.rig_on_status IN ('MISSED', 'DELAYED') THEN 'SLIPPED - RIG ON'
-            WHEN ms.flaf_status IN ('MISSED', 'DELAYED') THEN 'SLIPPED - FLAF'
-            WHEN ms.pegging_status IN ('MISSED', 'DELAYED') THEN 'SLIPPED - PEGGING'
-            WHEN ms.rig_off_status IN ('MISSED', 'DELAYED') THEN 'SLIPPED - RIG OFF'
+            WHEN sd.rig_on_failed = 1 THEN 'SLIPPED - RIG ON'
+            WHEN sd.flaf_failed = 1 THEN 'SLIPPED - FLAF'
+            WHEN sd.pegging_failed = 1 THEN 'SLIPPED - PEGGING'
+            WHEN sd.rig_off_failed = 1 THEN 'SLIPPED - RIG OFF'
+            ELSE NULL
         END AS well_slippage_status
-    FROM milestone_status AS ms
+    FROM status_data AS sd
 ),
-result_set AS
+variance_data AS
 (
     SELECT
-        h.well_id,
-        h.flaf_deadline,
-        h.flaf_actual,
-        h.flaf_status,
+        hd.*,
         CASE
-            WHEN h.flaf_status = 'MISSED' THEN DATEDIFF(day, h.flaf_deadline, CAST(GETDATE() AS date))
-            WHEN h.flaf_status IN ('AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED') THEN DATEDIFF(day, h.flaf_deadline, h.flaf_actual)
+            WHEN hd.flaf_status IN ('MISSED', 'AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED')
+                THEN DATEDIFF(day, hd.flaf_deadline, COALESCE(hd.flaf_issue_date, CAST(GETDATE() AS date)))
+            ELSE NULL
         END AS flaf_variance_days,
-        h.pegging_deadline,
-        h.pegging_actual,
-        h.pegging_status,
         CASE
-            WHEN h.pegging_status = 'MISSED' THEN DATEDIFF(day, h.pegging_deadline, CAST(GETDATE() AS date))
-            WHEN h.pegging_status IN ('AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED') THEN DATEDIFF(day, h.pegging_deadline, h.pegging_actual)
+            WHEN hd.pegging_status IN ('MISSED', 'AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED')
+                THEN DATEDIFF(day, hd.pegging_deadline, COALESCE(hd.pegged_date, CAST(GETDATE() AS date)))
+            ELSE NULL
         END AS pegging_variance_days,
-        h.rig_on_deadline,
-        h.rig_on_actual,
-        h.rig_on_status,
         CASE
-            WHEN h.rig_on_status = 'MISSED' THEN DATEDIFF(day, h.rig_on_deadline, CAST(GETDATE() AS date))
-            WHEN h.rig_on_status IN ('AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED') THEN DATEDIFF(day, h.rig_on_deadline, h.rig_on_actual)
+            WHEN hd.rig_on_status IN ('MISSED', 'AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED')
+                THEN DATEDIFF(day, hd.rig_on_deadline, COALESCE(hd.rig_on_date, CAST(GETDATE() AS date)))
+            ELSE NULL
         END AS rig_on_variance_days,
-        h.rig_off_deadline,
-        h.rig_off_actual,
-        h.rig_off_status,
         CASE
-            WHEN h.rig_off_status = 'MISSED' THEN DATEDIFF(day, h.rig_off_deadline, CAST(GETDATE() AS date))
-            WHEN h.rig_off_status IN ('AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED') THEN DATEDIFF(day, h.rig_off_deadline, h.rig_off_actual)
-        END AS rig_off_variance_days,
-        h.well_slippage_status
-    FROM headline AS h
-    WHERE h.well_slippage_status IS NOT NULL
+            WHEN hd.rig_off_status IN ('MISSED', 'AHEAD_OF_SCHEDULE', 'ON_SCHEDULE', 'DELAYED')
+                THEN DATEDIFF(day, hd.rig_off_deadline, COALESCE(hd.rig_off_date, CAST(GETDATE() AS date)))
+            ELSE NULL
+        END AS rig_off_variance_days
+    FROM headline_data AS hd
 )
 SELECT
-    rs.well_id AS well_id,
-    rs.flaf_deadline AS flaf_deadline,
-    rs.flaf_actual AS flaf_actual,
-    rs.flaf_status AS flaf_status,
-    rs.flaf_variance_days AS flaf_variance_days,
-    rs.pegging_deadline AS pegging_deadline,
-    rs.pegging_actual AS pegging_actual,
-    rs.pegging_status AS pegging_status,
-    rs.pegging_variance_days AS pegging_variance_days,
-    rs.rig_on_deadline AS rig_on_deadline,
-    rs.rig_on_actual AS rig_on_actual,
-    rs.rig_on_status AS rig_on_status,
-    rs.rig_on_variance_days AS rig_on_variance_days,
-    rs.rig_off_deadline AS rig_off_deadline,
-    rs.rig_off_actual AS rig_off_actual,
-    rs.rig_off_status AS rig_off_status,
-    rs.rig_off_variance_days AS rig_off_variance_days,
-    rs.well_slippage_status AS well_slippage_status
-FROM result_set AS rs
-ORDER BY rs.rig_on_deadline ASC
+    vd.well_id AS well_id,
+    vd.flaf_deadline AS flaf_deadline,
+    vd.flaf_issue_date AS flaf_actual,
+    vd.flaf_status AS flaf_status,
+    vd.flaf_variance_days AS flaf_variance_days,
+    vd.pegging_deadline AS pegging_deadline,
+    vd.pegged_date AS pegging_actual,
+    vd.pegging_status AS pegging_status,
+    vd.pegging_variance_days AS pegging_variance_days,
+    vd.rig_on_deadline AS rig_on_deadline,
+    vd.rig_on_date AS rig_on_actual,
+    vd.rig_on_status AS rig_on_status,
+    vd.rig_on_variance_days AS rig_on_variance_days,
+    vd.rig_off_deadline AS rig_off_deadline,
+    vd.rig_off_date AS rig_off_actual,
+    vd.rig_off_status AS rig_off_status,
+    vd.rig_off_variance_days AS rig_off_variance_days,
+    vd.well_slippage_status AS well_slippage_status
+FROM variance_data AS vd
+WHERE vd.well_slippage_status IS NOT NULL
+ORDER BY vd.ex_rig_on_date

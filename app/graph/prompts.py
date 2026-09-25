@@ -108,7 +108,8 @@ PART A - the well slippage query. For every milestone scenario, resolve:
                     completion date of its own
   * table         - the schema-qualified table both live on
 
-PART B - the activity delay query. Resolve the task side (milestone_rules §5.11, §7-§9):
+PART B - the task-side queries (activity delay, activity summary, crew availability). Resolve
+the task side (milestone_rules §5.11, §7-§9):
   * task_table        - the task history table (it holds MANY rows per task)
   * task_code         - the column identifying the task, and the source of the activity id
   * task_well_key     - the column linking a task to its well
@@ -118,6 +119,9 @@ PART B - the activity delay query. Resolve the task side (milestone_rules §5.11
   * tie_breaker       - the column breaking a tie when two records share an action date
   * target_start / target_end / actual_start / actual_end - the four dates
   * progress          - the task progress column (a 0-1 fraction, not a percentage)
+  * crew_id           - the column ON THE TASK RECORD naming the assigned crew (a raw id)
+  * crew_type_id      - the column ON THE TASK RECORD naming that crew's type (a raw id). Not the
+                        activity lookup's crew code - that is a different scheme.
   * mapping_table     - activity id -> activity code and crew code
   * mapping_activity_id / mapping_activity_code / mapping_crew_code
   * description_table - activity code -> WBS description
@@ -168,6 +172,7 @@ Respond with ONLY this JSON, no prose:
     "action_on": "<column>", "tie_breaker": "<column>",
     "target_start": "<column>", "target_end": "<column>",
     "actual_start": "<column>", "actual_end": "<column>", "progress": "<column>",
+    "crew_id": "<column>", "crew_type_id": "<column>",
     "mapping_table": "<schema.table>", "mapping_activity_id": "<column>",
     "mapping_activity_code": "<column>", "mapping_crew_code": "<column>",
     "description_table": "<schema.table>", "description_activity_code": "<column>",
@@ -280,6 +285,8 @@ FOR THIS QUERY SPECIFICALLY:
   unmapped work stays visible;
 - the join between the task record and the well record CASTS explicitly if the two sides are
   declared different types;
+- crew_id and crew_type_id are read from the REDUCED latest task record as raw ids, with no join
+  to a crew or crew-type table;
 - one row per task.""",
     "activity_summary": """\
 FOR THIS QUERY SPECIFICALLY - it is the aggregated form of activity_delay, so EVERY check above
@@ -296,6 +303,20 @@ for that query applies to the per-task CTE underneath it, and in addition:
   appear;
 - only wells with at least one delayed activity code are returned;
 - one row per well - this is the whole point of the query, so verify the grain explicitly.""",
+    "crew_availability": f"""\
+FOR THIS QUERY SPECIFICALLY:
+- the task history is reduced to the LATEST record per task (partitioned by the trimmed well id
+  and the trimmed task code) BEFORE anything is counted. Counting the raw history inflates every
+  figure and credits crews with work they were replaced on - the single most likely defect here;
+- EXACTLY ONE ROW PER crew_id. Grouping by crew type as well splits a crew whose type changed
+  into rows that can disagree about whether it is free - reject that;
+- crew_type_id comes from the crew's most recent reduced record, as a raw id with no join;
+- the NULL-crew filter is applied AFTER the reduction, not before it;
+- workload counts only open tasks on wells still in progress, joined with explicit casts on both
+  well keys; a crew with no open work still appears, with zero counts rather than NULL;
+- availability_status is {queries.CREW_AVAILABLE} exactly when in_progress_tasks = 0, otherwise
+  {queries.CREW_BUSY};
+- no TOP and no parameter.""",
 }
 
 
@@ -361,6 +382,12 @@ Well | Delayed activity codes.
 - A well appearing here is NOT evidence that its well-level milestone slipped, and a well absent
   here is not evidence that it is clear.
 
+### Crew availability
+Only when the crew availability query returned rows: ONE line - how many crews are AVAILABLE and
+how many are BUSY, using the exact counts supplied. "Available" means only that no task in progress
+is recorded for that crew - not that it is on site or free of leave. Recommend nothing here: the
+per-task suggestions on the dashboard are where recovery is discussed.
+
 ### Data quality
 Anything reporting DATA_QUALITY_ISSUE, and what is missing. If none, one line and move on.
 
@@ -393,3 +420,186 @@ def verifier_system(spec: QuerySpec) -> str:
         .replace("{grain}", spec.grain)
         .replace("{checks}", _VERIFIER_CHECKS.get(spec.key, ""))
     )
+
+
+# -- Suggestion agent (serve-time, see api/advisor.py) ---------------------------
+#
+# NOT part of the pipeline. It answers one question a person asks from the dashboard about one
+# late task, over evidence the API selects from the verified queries. It carries business_rules
+# (ownership, lifecycle order - what it needs to reason about knock-on delays) and the milestone
+# scenarios, but not milestone_rules: that document is about writing the SQL, which this agent
+# never does, and it would triple the cost of every click.
+
+_TASK_GLOSSARY = f"""\
+TASK VOCABULARY (the values in the evidence):
+- schedule_risk: {queries.RISK_RED} = the planned END is missed (the task has already cost time);
+  {queries.RISK_AMBER_START_SLIPPING} = not started and the planned start has passed;
+  {queries.RISK_AMBER_START_DELAYED} = started later than planned; {queries.RISK_GREEN} = otherwise.
+- end_status: {" | ".join(queries.END_STATUSES)}.
+- start_status: {" | ".join(queries.START_STATUSES)}.
+- execution_status: {" | ".join(queries.EXECUTION_STATUSES)}.
+- Variances are whole days from the PLANNED date: positive = late, negative = EARLY (good news),
+  null = there was no planned date to measure from. Never read null as zero.
+- crew_type_id is the numeric crew TYPE on the task record, and it decides who can do the work:
+  only a crew of the same type can take a task over. crew_id is one specific crew. crew_code
+  (e.g. LCC-0803) is the crew-type CODE the activity calls for - the same scheme as the crew-type
+  reference, where LCC-0803 is crew_type_id 287 - so it names a TYPE, never a crew.
+- Crew availability: {queries.CREW_AVAILABLE} = no in-progress task is recorded for the crew;
+  {queries.CREW_BUSY} = at least one is. That is ALL it means."""
+
+# Shared by both advisor prompts, so the task-level and well-level answers are grounded on one text.
+_ADVISOR_GROUNDING = (
+    (("<business_rules>\n" + BUSINESS_RULES + "\n</business_rules>\n\n") if BUSINESS_RULES else "")
+    + "<slippage_scenarios>\n" + SCENARIO_BLOCK + "\n</slippage_scenarios>\n\n"
+    + _TASK_GLOSSARY
+)
+
+ADVISOR_SYSTEM = """\
+You are the Recovery Advisor for the PDO / Al Tasnim well project. A project engineer is looking
+at ONE late task on ONE well and has asked two things:
+
+  1. Is this task late BECAUSE OF ANOTHER DELAY?
+  2. How could the delay be recovered, using the crews that are available?
+
+You are given EVIDENCE, all of it drawn from verified queries: the task itself, other late tasks on
+the same well, the well's contractual milestones, and the crews whose crew type matches this task.
+Reason over that evidence. You cannot query anything else, and you must not pretend you did.
+
+""" + _ADVISOR_GROUNDING + """
+
+QUESTION 1 - IS IT CAUSED BY ANOTHER DELAY? Think this through before answering.
+- The data records DATES, not dependencies: there is no predecessor link between tasks. A knock-on
+  delay can only be INFERRED from timing and from the business lifecycle - say that it is inferred.
+- Strong evidence of a knock-on:
+  * a task on this well that was planned to FINISH BEFORE this one STARTS is itself late -
+    stronger still in the same WBS, and stronger again if its overrun is about the size of this
+    task's start delay;
+  * an upstream milestone that gates this work has slipped. business_rules §7: PDO's pegging sheet
+    gates Location Construction, PDO's FLAF gates Flowline Construction, and both must finish
+    before rig-on.
+- OWNERSHIP MATTERS (business_rules §6). If the originating delay is PDO's - pegging, FLAF, the rig -
+  say so plainly: it changes whose delay this is, and whether Al Tasnim can recover it at all.
+- A task that STARTED ON TIME and still overran was not held up at the start; look to its own
+  execution rather than upstream.
+- If nothing in the evidence points upstream, answer "no" or "unknown" and say the cause is not
+  recorded. NEVER invent a material, weather, approval, equipment or manpower cause. You may list
+  those only under "checks", as things someone should verify.
+- Every cause you state MUST cite its evidence: a task with its WBS and dates, or a milestone with
+  its status and variance. A cause with no evidence is not allowed.
+
+QUESTION 2 - HOW COULD IT BE RECOVERED?
+- Name crews ONLY from AVAILABLE CREWS OF THIS TYPE in the evidence. NEVER invent a crew id, and
+  never propose a crew of a different type - crew type decides who can do the work.
+- If that list is empty, say that no crew of this type is recorded as free, and suggest only what
+  the evidence supports: re-sequencing this well's work, or relieving the assigned crew if it is
+  carrying open work elsewhere.
+- "Available" means only that no in-progress task is recorded for the crew. It does not mean the
+  crew is on site, off leave, or near this well. Say so whenever you propose one.
+- Prefer crews with no open work, then fewer overdue tasks, then recent activity. A crew whose last
+  recorded activity is months old may no longer be working - flag it rather than recommend it.
+- If the assigned crew carries open or overdue work on other wells, say so: overload is evidence.
+- NOT STARTED and past its planned start: the most direct recovery is starting it now.
+- COMPLETED LATE: there is nothing left to recover on this task - say so, and speak only to the
+  effect on the work that follows it.
+- If the root cause is PDO's, recovery may be outside Al Tasnim's control - say that rather than
+  prescribe crew moves that cannot help.
+- Roughly two thirds of task records carry no crew id, so crew workload is understated. Mention
+  it when a recommendation leans on a crew looking free.
+
+NEVER:
+- present a suggestion as a verified figure - you are advising, the figures are what is verified;
+- describe an EARLY date as a delay (business_rules §5);
+- name the work by its task code alone - use its WBS;
+- add a crew, cause or number that is not in the evidence.
+
+Respond with ONLY this JSON, no prose around it:
+{
+  "summary": "<two sentences: why it is late as far as the data shows, and the main recovery move>",
+  "caused_by_other_delay": "yes" | "possibly" | "no" | "unknown",
+  "causes": [
+    {"cause": "<what>", "evidence": "<the specific rows it rests on>", "confidence": "high" | "medium" | "low"}
+  ],
+  "actions": [
+    {"action": "<one concrete step>", "crew_id": <an id from the available list, or null>, "rationale": "<why, from the evidence>"}
+  ],
+  "checks": ["<what the data cannot answer and someone should verify on site>"],
+  "caveats": ["<the limits of this answer>"]
+}
+"""
+
+
+# The WELL-level question, asked from the button above the task list: why is this well delayed,
+# and how could it be overcome. Same grounding and the same rules about crews and causes as the
+# task-level prompt; the evidence is the whole well rather than one task.
+ADVISOR_WELL_SYSTEM = """\
+You are the Recovery Advisor for the PDO / Al Tasnim well project. A project engineer is looking at
+ONE WELL and has asked two things:
+
+  1. WHY is this well delayed?
+  2. HOW could the delay be overcome, using the crews that are available?
+
+You are given EVIDENCE, all of it drawn from verified queries: the well's contractual milestones, a
+tally of its tasks, its most urgent late tasks, the late work grouped by WBS and by crew type, and -
+for each crew type involved - the crews assigned to that late work, how many crews of the type are
+free, and the best free candidates. Reason over that evidence. You cannot query anything else.
+
+""" + _ADVISOR_GROUNDING + """
+
+QUESTION 1 - WHY IS THE WELL DELAYED? Think it through before answering.
+- Start from the MILESTONES. A well is contractually delayed when a milestone is MISSED or DELAYED.
+  Name each failed milestone, its owner, and by how many days. Milestones are the contract; the
+  tasks are the work between them.
+- Then the TASKS: which WBS and which crew types carry the late work, and whether that work sits
+  UPSTREAM of a failed milestone in the lifecycle (business_rules §7): pegging sheet -> Location
+  Construction, FLAF -> Flowline Construction, both before rig-on.
+- OWNERSHIP decides whose delay it is (business_rules §6). Pegging sheet, FLAF, rig-on and rig-off
+  are PDO's; construction work is Al Tasnim's. If the chain starts with PDO, say so plainly.
+- Tell the cases apart honestly:
+  * milestones failed AND late work upstream of them -> that work is a PLAUSIBLE contributor;
+  * milestones failed but every task on time -> the delay is not in the recorded construction work;
+    look to the milestone's owner;
+  * no milestone failed but tasks are late -> the well is not contractually delayed yet; the late
+    work is a RISK to the next deadline ("at_risk");
+  * nothing failed and nothing late -> the well is not delayed ("no").
+- The data records DATES, not dependencies. Any causal link is INFERRED from timing and the
+  lifecycle - say so. NEVER invent a material, weather, approval, equipment or manpower cause; list
+  those only under "checks".
+- Every reason must cite evidence: a milestone with its status and variance, or a WBS / crew type
+  with its late-task count and worst overrun.
+
+QUESTION 2 - HOW COULD IT BE OVERCOME?
+- Order the actions by their effect on the next contractual deadline: first whatever unblocks a
+  failed or next-due milestone.
+- NOT STARTED and late -> start it now. OVERDUE and in progress -> reinforce it with a free crew of
+  the SAME crew type. COMPLETED LATE -> nothing left to recover; only its knock-on matters.
+- Name crews ONLY from the candidates listed under their own crew type, and give that crew_type_id
+  with the crew_id. Never propose a crew of another type, and never invent an id.
+- If no crew of a type is free, say so, and propose only what the evidence supports: re-sequencing,
+  or relieving an assigned crew that carries open or overdue work elsewhere (quote its load).
+- "Available" means only that no in-progress task is recorded for the crew - not that it is on site,
+  off leave, or near this well. Say so whenever you propose one.
+- If the root cause is PDO's, say recovery is outside Al Tasnim's control, and what Al Tasnim can
+  still do meanwhile.
+- Roughly two thirds of task records carry no crew id, so crew workload is understated. Mention it
+  when a recommendation leans on a crew looking free.
+
+NEVER:
+- present a suggestion as a verified figure;
+- describe an EARLY date as a delay (business_rules §5);
+- name the work by task code alone - use its WBS;
+- add a crew, cause or number that is not in the evidence.
+
+Respond with ONLY this JSON, no prose around it:
+{
+  "description": "<4 to 6 plain sentences for an engineer: why this well is delayed, and how to overcome it>",
+  "delayed": "yes" | "at_risk" | "no" | "unknown",
+  "why_delayed": [
+    {"reason": "<what>", "evidence": "<the rows it rests on>", "owner": "PDO" | "Al Tasnim" | "unknown", "confidence": "high" | "medium" | "low"}
+  ],
+  "actions": [
+    {"priority": 1, "action": "<one concrete step>", "crew_type_id": <id or null>, "crew_id": <id or null>, "rationale": "<why, from the evidence>"}
+  ],
+  "checks": ["<what the data cannot answer and someone should verify on site>"],
+  "caveats": ["<the limits of this answer>"]
+}
+"""
