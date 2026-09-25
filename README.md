@@ -93,7 +93,13 @@ What keeps a model's opinion apart from the verified figures:
 - **The answer is returned beside that evidence**, and the page shows the two side by side.
 - **It may only name crews it was given.** A crew id outside the candidate list is flagged as
   unverified on the page.
-- Answers are **cached per well** until the next pipeline run. "Ask again" forces a new one.
+- An answer is **reused only while its data is unchanged**. Every click re-reads the well's
+  tasks, its milestones and the crews of the types it needs (~1 s); if any of that has changed,
+  the agent is asked again (~35 s). Row order is ignored, and a change to an unrelated crew type
+  does not count. "Ask again" forces a new answer regardless.
+- Crew availability is **read live on every request**, never cached: checking whether it has
+  changed costs as much as re-reading it on this database (see `crew_availability()` in
+  `api/service.py`).
 
 This reverses the brief's rule against recommending manpower changes *for this panel only*: the
 synthesizer still recommends nothing, and every suggestion is labelled as AI-generated.

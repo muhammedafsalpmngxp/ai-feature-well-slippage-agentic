@@ -18,11 +18,13 @@ mistaken for a verified figure:
   * IT MAY ONLY NAME CREWS IT WAS GIVEN. A crew id in an answer that is not among the candidates is
     flagged on the action (`crew_unverified`) and in the caveats, never passed off as advice.
 
-Answers are cached per task until the next pipeline run: each costs a model call, and
-the evidence behind it only changes when the pipeline does.
+An answer is reused only while the data it rests on is unchanged (see _answer): each costs a
+model call, and one whose data has not moved is not worth paying for twice - while one whose data
+HAS moved must not be served beside newer figures.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from concurrent.futures import Future
@@ -45,12 +47,11 @@ log = get_logger()
 MAX_RELATED = 12
 MAX_CANDIDATES = 8
 
-# Long, because invalidate() is what really expires an answer: the evidence only changes when a
-# pipeline run finishes. The TTL just stops a forgotten API process serving a week-old answer.
-_CACHE_TTL_SECONDS = 6 * 3600
-_cache: dict[tuple[str, str], tuple[float, dict]] = {}
-# Answers being computed right now, by the same key as the cache. See _answer().
-_inflight: dict[tuple[str, str], Future] = {}
+# Stored answers, each with the fingerprint of the data it was reasoned over. No time limit: an
+# answer is exactly as current as that data, so it expires when the data changes, not by the clock.
+_cache: dict[tuple[str, str], tuple[str, dict]] = {}
+# Answers being computed right now, keyed (cache key, data fingerprint). See _answer().
+_inflight: dict[tuple[tuple[str, str], str], Future] = {}
 _lock = Lock()
 
 _VERDICTS = ("yes", "possibly", "no", "unknown")
@@ -78,55 +79,108 @@ class TaskNotFound(LookupError):
 
 
 def invalidate() -> None:
-    """Drop every cached answer. Called when a pipeline run finishes: new figures, new evidence."""
+    """Drop every stored answer. Called when a pipeline run finishes.
+
+    No longer what expires an answer - the data fingerprint does that, including for runs started
+    from the command line, which never reach this process. Kept because it costs nothing and a
+    run that rewrote the SQL is a reasonable moment to start clean.
+    """
     with _lock:
         _cache.clear()
 
 
-def _answer(key: tuple[str, str], fresh: bool, compute) -> dict:
-    """Serve a cached answer, join one already being computed, or compute it - never two at once.
+def _canon(value: Any) -> Any:
+    """An order-free form of a value, for fingerprinting: dict keys and list items sorted.
 
-    ⚠ WHY THE JOIN, AND WHY HERE. The cache only helps AFTER an answer exists, and an answer takes
-    ~90s. Until then every request for the same key missed it and paid for its own
-    call - measured: one click in `next dev` logged two advisor calls for the same well in the
-    same second (React Strict Mode runs the panel's fetch effect twice), 94s and 100s, both
-    billed, one thrown away. Production has no Strict Mode, but the same gap is hit by a
-    double-click, by closing and reopening a panel mid-answer, and by two people on one well.
-    Only the server sees all of those callers, so the fix is here rather than in the page.
-
-    `fresh` skips the CACHE, not a call in flight: that call started after the cached answer
-    being refused, so it is already the fresh answer being asked for.
-
-    A failure is not cached: every waiting caller gets the same exception, and the next request
-    tries again. No wait timeout is needed, because the call being waited on is bounded by
-    LLM_TIMEOUT.
+    ⚠ ORDER MUST NOT COUNT AS A CHANGE. The activity query returns tied rows (same risk, same
+    variances, same dates) in a different order on each run - measured: three gathers of well
+    35552 with no data change gave three different prompts. Fingerprinting the prompt text would
+    have made every click look like new data and paid for a model call each time.
     """
+    if isinstance(value, dict):
+        return {str(k): _canon(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        items = [_canon(v) for v in value]
+        return sorted(items, key=lambda v: json.dumps(v, sort_keys=True, default=str))
+    return value
+
+
+def _fingerprint(*parts: Any) -> str:
+    """A hash of the DATA an answer rests on - rows, not the prompt rendered from them."""
+    blob = json.dumps([_canon(p) for p in parts], sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _crews_for(tasks: list[dict], crews: list[dict] | None) -> list[dict]:
+    """The crew rows an answer about these tasks can depend on, for its fingerprint.
+
+    The crews assigned to them, and every crew of a crew type they need - the candidates are
+    drawn from those. A change to a crew of an unrelated type cannot alter the answer, so it must
+    not expire it.
+    """
+    if not crews:
+        return []
+    types = {_key(t.get("crew_type_id")) for t in tasks} - {None}
+    ids = {_key(t.get("crew_id")) for t in tasks} - {None}
+    return [c for c in crews if _key(c.get("crew_type_id")) in types or _key(c.get("crew_id")) in ids]
+
+
+def _answer(key: tuple[str, str], fresh: bool, gather, ask) -> dict:
+    """Serve a stored answer while its data is unchanged, join one already being computed, or ask.
+
+    EXPIRY IS BY DATA, NOT BY TIME. `gather()` runs the verified queries on every request - the
+    cheap part, a few seconds against ~35s for the model - and returns (evidence, prompt,
+    fingerprint). A stored answer is served only while the fingerprint is the same, so an answer
+    is never older than the figures beside it, and one whose data has not moved is never paid
+    for twice. It replaces a 6-hour TTL plus "clear on a dashboard-started run", which let an
+    answer outlive the data by hours: new daily records cleared nothing, and neither did a run
+    started from the command line.
+
+    ⚠ WHY THE JOIN, AND WHY HERE. A stored answer only helps AFTER it exists, and asking takes
+    ~35s. Until then every request for the same key missed it and paid for its own call -
+    measured: one click in `next dev` logged two advisor calls for the same well in the same
+    second (React Strict Mode runs the panel's fetch effect twice), both billed, one thrown away.
+    Production has no Strict Mode, but the same gap is hit by a double-click, by closing and
+    reopening a panel mid-answer, and by two people on one well. Only the server sees all of
+    those callers, so the fix is here rather than in the page. A call is joined only when it is
+    for the SAME data: a request that sees newer data waits for nothing and asks about that.
+
+    `fresh` skips the stored answer, not a call in flight: that call started after the stored
+    answer was refused, so it is already the fresh answer being asked for.
+
+    A failure is not stored: every waiting caller gets the same exception, and the next request
+    tries again. A missing task raises from gather(), before anything is in flight. No wait
+    timeout is needed, because the call being waited on is bounded by LLM_TIMEOUT.
+    """
+    evidence, prompt, version = gather()
+    flight = (key, version)
     with _lock:
-        if not fresh:
-            hit = _cache.get(key)
-            if hit and time.time() - hit[0] < _CACHE_TTL_SECONDS:
-                return {**hit[1], "cached": True}
-        pending = _inflight.get(key)
+        hit = _cache.get(key)
+        if not fresh and hit and hit[0] == version:
+            return {**hit[1], "cached": True}
+        pending = _inflight.get(flight)
         leader = pending is None
         if leader:
-            pending = _inflight[key] = Future()
+            pending = _inflight[flight] = Future()
 
     if not leader:
         log.info("advisor: %s is already being answered - waiting for that call, not starting another",
                  "/".join(key))
         # Generated for this request's moment, so it is NOT reported as cached.
         return dict(pending.result())
+    if hit and not fresh:
+        log.info("advisor: %s - the data has changed since the stored answer, asking again", "/".join(key))
 
     try:
-        result = compute()
+        result = ask(evidence, prompt)
     except BaseException as exc:
         with _lock:
-            _inflight.pop(key, None)
+            _inflight.pop(flight, None)
         pending.set_exception(exc)
         raise
     with _lock:
-        _cache[key] = (time.time(), result)
-        _inflight.pop(key, None)
+        _cache[key] = (version, result)
+        _inflight.pop(flight, None)
     pending.set_result(result)
     return result
 
@@ -244,8 +298,11 @@ def _well(well_id: str) -> dict:
     return {"listed": False, "headline": None, "milestones": [], "note": None}
 
 
-def _crews(task: dict) -> dict:
+def _crews(task: dict, crews: list[dict] | None) -> dict:
     """The crew side: the assigned crew's own load, and free crews of the SAME type.
+
+    `crews` is the crew availability table, or None when it has not been generated. Passed in
+    rather than read here so the caller fingerprints the same rows this reasons over.
 
     Crew type decides who can do the work - a crew of another type is not a substitute - so the
     candidates are filtered on crew_type_id before anything else, and the assigned crew is left out
@@ -267,9 +324,7 @@ def _crews(task: dict) -> dict:
         out["note"] = ("This well's task data predates the crew columns, so the task's crew type is "
                        "unknown. Re-run the analysis to regenerate the activity query.")
         return out
-    try:
-        crews = service.crew_availability()
-    except service.QueryUnavailable:
+    if crews is None:
         out["note"] = "Crew availability has not been generated yet. Re-run the analysis to build it."
         return out
 
@@ -407,32 +462,44 @@ def _normalise(parsed: Any, crew: dict) -> dict | None:
 
 
 def suggest(well_id: str, task_code: str, fresh: bool = False) -> dict:
-    """Advise on one late task. Cached per task until the next pipeline run unless `fresh`."""
+    """Advise on one late task. Reused while its data is unchanged, unless `fresh`."""
     if not settings.openai_api_key:
         raise AdvisorUnavailable("OPENAI_API_KEY is not set in .env, so the suggestion agent cannot run.")
 
     key = (str(well_id).strip(), str(task_code).strip())
-    return _answer(key, fresh, lambda: _suggest_task(key))
+    return _answer(key, fresh, lambda: _task_evidence(key), lambda ev, prompt: _task_answer(key, ev, prompt))
 
 
-def _suggest_task(key: tuple[str, str]) -> dict:
-    """The uncached answer for one task: gather the evidence, then ask the model once."""
+def _task_evidence(key: tuple[str, str]) -> tuple[dict, str, str]:
+    """(evidence, prompt, data fingerprint) for one task. Database reads only - no model."""
     tasks = service.activity_for_well(key[0])
     task = next((t for t in tasks if str(t.get("task_code") or "").strip() == key[1]), None)
     if task is None:
         raise TaskNotFound("Task " + key[1] + " is not among well " + key[0] + "'s current tasks.")
+    try:
+        crews = service.crew_availability()
+    except service.QueryUnavailable:
+        crews = None
 
     earlier, same_wbs = _related(task, tasks)
+    well = _well(key[0])
     evidence = {
         "task": _slim(task),
         "earlier_late_tasks": earlier,
         "same_wbs_late_tasks": same_wbs,
-        "well": _well(key[0]),
-        "crew": _crews(task),
+        "well": well,
+        "crew": _crews(task, crews),
     }
+    # Every task on the well, not just the ones shown: the related-task lists are cut to a limit,
+    # and which rows make the cut depends on the rest.
+    version = _fingerprint(ADVISOR_SYSTEM, tasks, well, _crews_for([task], crews))
+    return evidence, _render(key[0], evidence), version
 
+
+def _task_answer(key: tuple[str, str], evidence: dict, prompt: str) -> dict:
+    """Ask the model once about one task, over evidence already gathered."""
     started = time.perf_counter()
-    raw = chat(ADVISOR_SYSTEM, _render(key[0], evidence), agent="advisor")
+    raw = chat(ADVISOR_SYSTEM, prompt, agent="advisor")
     advice = _normalise(extract_json(raw, default={}), evidence["crew"])
     log.info(
         "advisor: well %s task %s answered in %.1fs (%s, %d candidate crew(s))",
@@ -698,36 +765,44 @@ def _normalise_well(parsed: Any, evidence: dict) -> dict | None:
 
 
 def suggest_well(well_id: str, fresh: bool = False) -> dict:
-    """Why is this well delayed, and how could it be overcome. Cached until the next pipeline run."""
+    """Why is this well delayed, and how could it be overcome. Reused while its data is unchanged."""
     if not settings.openai_api_key:
         raise AdvisorUnavailable("OPENAI_API_KEY is not set in .env, so the suggestion agent cannot run.")
 
     key = (str(well_id).strip(), _WELL_KEY)
-    return _answer(key, fresh, lambda: _suggest_well(key))
+    return _answer(key, fresh, lambda: _well_evidence(key), lambda ev, prompt: _well_answer(key, ev, prompt))
 
 
-def _suggest_well(key: tuple[str, str]) -> dict:
-    """The uncached well-level answer: gather the evidence, then ask the model once."""
+def _well_evidence(key: tuple[str, str]) -> tuple[dict, str, str]:
+    """(evidence, prompt, data fingerprint) for the well-level question. Database reads only."""
     # Ordered most urgent first by the verified query itself, so the head of `late` is the worst.
     tasks = service.activity_for_well(key[0])
     late = [t for t in tasks if _is_late(t)]
     crews, crew_note = _crew_table(tasks)
+    well = _well(key[0])
     evidence = {
-        "well": _well(key[0]),
+        "well": well,
         "tasks": _tally(tasks),
         "late_by_wbs": _late_by_wbs(late),
         "late_by_crew_type": _late_by_crew_type(late, crews),
         "most_urgent": [_slim(t) for t in late[:MAX_URGENT]],
         "crew_note": crew_note,
     }
+    # The rows, not the rendered evidence: which late tasks make the MAX_URGENT cut, and the order
+    # of the groups, move with the query's tie order even when no data has changed (see _canon).
+    version = _fingerprint(ADVISOR_WELL_SYSTEM, tasks, well, _crews_for(late, crews), crew_note)
+    return evidence, _render_well(key[0], evidence), version
 
+
+def _well_answer(key: tuple[str, str], evidence: dict, prompt: str) -> dict:
+    """Ask the model once about the well, over evidence already gathered."""
     started = time.perf_counter()
-    raw = chat(ADVISOR_WELL_SYSTEM, _render_well(key[0], evidence), agent="advisor")
+    raw = chat(ADVISOR_WELL_SYSTEM, prompt, agent="advisor")
     advice = _normalise_well(extract_json(raw, default={}), evidence)
     log.info(
         "advisor: well %s (well-level) answered in %.1fs (%s, %d late task(s))",
         key[0], time.perf_counter() - started,
-        "parsed" if advice else "UNPARSED - returning raw text", len(late),
+        "parsed" if advice else "UNPARSED - returning raw text", evidence["tasks"]["late"],
     )
 
     result = {

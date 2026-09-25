@@ -181,9 +181,21 @@ def activity_summary() -> list[dict]:
 
 
 def crew_availability() -> list[dict]:
-    """One row per crew, fleet-wide. Cached like the other fleet queries: it changes only when the
-    pipeline reruns, and the suggestion agent reads it on every click."""
-    return _cached("crew_availability", lambda: as_records(run_sql(load_sql("crew_availability"))))
+    """One row per crew, fleet-wide. LIVE - run on every read, never served from a cache.
+
+    ⚠ NOT CACHED, DELIBERATELY. The rule is that crew data is reused only while it is unchanged,
+    and knowing it is unchanged costs as much as re-reading it. Measured against AlTasnimBI:
+      * the query itself                                    ~390 ms
+      * any round trip at all, even SELECT of one value      ~270-300 ms
+      * a row-count + checksum of the two tables it reads    ~700 ms  (slower than the query)
+      * last-write times / metadata row counts               refused: this login lacks
+                                                             VIEW DATABASE STATE
+      * change tracking                                      not enabled on the database
+    So a change check would save ~0.1s at best, and a timed cache serves a crew as free for up to
+    a minute after it started work. If a DBA grants VIEW DATABASE STATE or enables change
+    tracking, a real near-free check becomes possible; until then, live is the only way to be sure.
+    """
+    return as_records(run_sql(load_sql("crew_availability")))
 
 
 def activity_for_well(well_id: str) -> list[dict]:
