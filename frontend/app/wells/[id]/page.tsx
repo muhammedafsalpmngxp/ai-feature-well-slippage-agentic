@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { use, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, use, useCallback, useEffect, useMemo, useState } from "react";
 import {
   Card,
   Empty,
@@ -15,6 +15,7 @@ import {
   Td,
   Th,
 } from "@/components/ui";
+import { SuggestionPanel, WellSuggestionPanel } from "@/components/SuggestionPanel";
 import { WellLookup } from "@/components/WellLookup";
 import { api, ApiError } from "@/lib/api";
 import { EMPTY, cleanLabel, formatDate, formatPercent, formatVariance, varianceTone } from "@/lib/format";
@@ -26,6 +27,14 @@ import {
   type WellRow,
 } from "@/lib/types";
 
+/** Late = the end is missed (RED) or the start slipped (either AMBER). Only these get a Suggest button. */
+function isLate(task: TaskRow): boolean {
+  return task.schedule_risk === "RED" || (task.schedule_risk ?? "").startsWith("AMBER");
+}
+
+const SUGGEST_BUTTON =
+  "h-7 rounded-md border border-line-strong px-2.5 text-xs font-semibold text-accent transition-colors hover:bg-accent-soft";
+
 export default function WellDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const wellId = decodeURIComponent(id);
@@ -35,6 +44,12 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
   const [error, setError] = useState<string | null>(null);
   const [riskFilter, setRiskFilter] = useState("all");
   const [tasksFailed, setTasksFailed] = useState(false);
+  // The task whose suggestion panel is open, by task code (one per well after the history
+  // reduction). One at a time: each open panel is a model call, and two answers side by side in a
+  // dense table are harder to read than one.
+  const [suggestFor, setSuggestFor] = useState<string | null>(null);
+  // The well-level answer - why this well is delayed and how to overcome it - above the list.
+  const [wellAdviceOpen, setWellAdviceOpen] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
@@ -235,6 +250,15 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
         subtitle="Latest record per task · most urgent first"
         action={
           <div className="flex items-center gap-2.5">
+            <button
+              onClick={() => setWellAdviceOpen((open) => !open)}
+              disabled={tasks === null}
+              aria-expanded={wellAdviceOpen}
+              title="Ask the agent why this well is delayed and how to overcome it, using the crews that are free"
+              className="h-9 rounded-lg bg-accent px-3.5 text-xs font-semibold text-on-accent transition-colors hover:bg-accent-strong disabled:opacity-50"
+            >
+              {wellAdviceOpen ? "Hide suggestion" : "Suggest recovery"}
+            </button>
             <span className="tnum text-xs text-ink-3">
               {tasks === null ? "" : `${visible.length} of ${counts.total} tasks`}
             </span>
@@ -264,6 +288,11 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
           </div>
         }
       >
+        {wellAdviceOpen && (
+          <div className="border-b border-line bg-surface-2">
+            <WellSuggestionPanel wellId={wellId} onClose={() => setWellAdviceOpen(false)} />
+          </div>
+        )}
         {tasksFailed ? (
           <Empty message="This well's tasks could not be loaded, so no task figures are shown." />
         ) : tasks === null ? (
@@ -291,7 +320,10 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
               <tr>
                 <Th>WBS</Th>
                 <Th>Activity</Th>
-                <Th>Crew</Th>
+                {/* The ids recorded on the task itself. Crew TYPE decides which crews can take a
+                    task over; the activity's crew-type code (e.g. LCC-0803) is on hover. */}
+                <Th title="The crew type recorded on the task">Crew type</Th>
+                <Th title="The specific crew recorded on the task">Crew</Th>
                 <Th>Risk</Th>
                 {/* The start side was missing entirely. Without it a task that never started
                     and one that started and ran late are the same row — both Red, both Overdue —
@@ -302,61 +334,103 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
                 <Th>Planned end</Th>
                 <Th>Actual end</Th>
                 <Th align="right">Progress</Th>
+                <Th align="right">
+                  <span className="sr-only">Recovery suggestion</span>
+                </Th>
               </tr>
             </thead>
             <tbody>
-              {visible.map((task, i) => (
-                <tr key={`${task.task_code}-${i}`} className="transition-colors hover:bg-surface-2">
-                  <Td className="max-w-[280px]">
-                    <span className="block truncate" title={cleanLabel(task.wbs)}>
-                      {task.wbs ? cleanLabel(task.wbs) : (
-                        <span className="text-ink-3 italic">Unmapped</span>
-                      )}
-                    </span>
-                  </Td>
-                  <Td>
-                    <span className="font-mono text-xs text-ink-2">
-                      {task.activity_code ?? EMPTY}
-                    </span>
-                  </Td>
-                  <Td>
-                    <span className="font-mono text-xs text-ink-2">
-                      {task.crew_code ?? EMPTY}
-                    </span>
-                  </Td>
-                  <Td>
-                    <Status value={task.schedule_risk} />
-                  </Td>
-                  <Td>
-                    <Status value={task.start_status} />
-                  </Td>
-                  {/* The one tinted chip on this row. */}
-                  <Td>
-                    <Pill value={task.end_status} />
-                  </Td>
-                  <Td align="right">
-                    <span
-                      className={
-                        varianceTone(task.end_variance_days) === "danger"
-                          ? "font-semibold text-danger"
-                          : varianceTone(task.end_variance_days) === "good"
-                            ? "text-good"
-                            : "text-ink-3"
-                      }
+              {visible.map((task, i) => {
+                const late = isLate(task);
+                const open = suggestFor === task.task_code;
+                return (
+                  <Fragment key={`${task.task_code}-${i}`}>
+                    <tr
+                      className={`transition-colors hover:bg-surface-2 ${open ? "bg-surface-2" : ""}`}
                     >
-                      {formatVariance(task.end_variance_days)}
-                    </span>
-                  </Td>
-                  <Td className="text-ink-2">{formatDate(task.target_end)}</Td>
-                  {/* Beside the planned date, so the slip is on the row rather than inferred
-                      from the overrun. An em dash means the task has not finished — which is
-                      what OVERDUE and NOT_STARTED_LATE beside it already say. */}
-                  <Td className="text-ink-2">{formatDate(task.actual_end)}</Td>
-                  <Td align="right" className="text-ink-2">
-                    {formatPercent(task.progress_percent)}
-                  </Td>
-                </tr>
-              ))}
+                      <Td className="max-w-[280px]">
+                        <span className="block truncate" title={cleanLabel(task.wbs)}>
+                          {task.wbs ? cleanLabel(task.wbs) : (
+                            <span className="text-ink-3 italic">Unmapped</span>
+                          )}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="font-mono text-xs text-ink-2">
+                          {task.activity_code ?? EMPTY}
+                        </span>
+                      </Td>
+                      <Td
+                        title={
+                          task.crew_code ? `Activity crew-type code ${task.crew_code}` : undefined
+                        }
+                      >
+                        <span className="font-mono text-xs text-ink-2">
+                          {task.crew_type_id ?? EMPTY}
+                        </span>
+                      </Td>
+                      <Td>
+                        <span className="font-mono text-xs text-ink-2">
+                          {task.crew_id ?? EMPTY}
+                        </span>
+                      </Td>
+                      <Td>
+                        <Status value={task.schedule_risk} />
+                      </Td>
+                      <Td>
+                        <Status value={task.start_status} />
+                      </Td>
+                      {/* The one tinted chip on this row. */}
+                      <Td>
+                        <Pill value={task.end_status} />
+                      </Td>
+                      <Td align="right">
+                        <span
+                          className={
+                            varianceTone(task.end_variance_days) === "danger"
+                              ? "font-semibold text-danger"
+                              : varianceTone(task.end_variance_days) === "good"
+                                ? "text-good"
+                                : "text-ink-3"
+                          }
+                        >
+                          {formatVariance(task.end_variance_days)}
+                        </span>
+                      </Td>
+                      <Td className="text-ink-2">{formatDate(task.target_end)}</Td>
+                      {/* Beside the planned date, so the slip is on the row rather than inferred
+                          from the overrun. An em dash means the task has not finished — which is
+                          what OVERDUE and NOT_STARTED_LATE beside it already say. */}
+                      <Td className="text-ink-2">{formatDate(task.actual_end)}</Td>
+                      <Td align="right" className="text-ink-2">
+                        {formatPercent(task.progress_percent)}
+                      </Td>
+                      <Td align="right">
+                        {late && (
+                          <button
+                            onClick={() => setSuggestFor(open ? null : task.task_code)}
+                            aria-expanded={open}
+                            className={SUGGEST_BUTTON}
+                          >
+                            {open ? "Hide" : "Suggest"}
+                          </button>
+                        )}
+                      </Td>
+                    </tr>
+                    {open && (
+                      <tr>
+                        <td colSpan={12} className="border-b border-line bg-surface-2">
+                          <SuggestionPanel
+                            wellId={wellId}
+                            task={task}
+                            onClose={() => setSuggestFor(null)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </TableShell>
         )}
@@ -364,7 +438,9 @@ export default function WellDetail({ params }: { params: Promise<{ id: string }>
 
       <p className="text-xs leading-relaxed text-ink-3">
         A delayed task is evidence that <em>that task</em> is slipping. It does not by itself
-        establish that the task caused this well&rsquo;s milestone to slip.
+        establish that the task caused this well&rsquo;s milestone to slip. Recovery suggestions
+        are AI-generated from the verified evidence shown with them &mdash; review them before
+        acting.
       </p>
     </div>
   );

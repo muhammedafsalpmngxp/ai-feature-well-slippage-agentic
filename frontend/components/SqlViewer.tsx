@@ -10,7 +10,7 @@ import type { PipelineStatus } from "@/lib/types";
  * The verified SQL behind each panel, selectable.
  *
  * This is provenance, not a debugging aid. An operations figure nobody can trace is a figure
- * nobody should act on, and these three statements are the entire derivation of every number on
+ * nobody should act on, and these statements are the entire derivation of every number on
  * the dashboard - the deadlines, the statuses, the variances are all computed in SQL, not here.
  *
  * Shown as read-only text. There is deliberately no way to edit or run a statement from the
@@ -21,6 +21,7 @@ const QUERIES = [
   { key: "well_slippage", label: "1 · Well slippage", note: "One row per well · fleet-wide" },
   { key: "activity_summary", label: "2 · Delayed activity per well", note: "One row per well · fleet-wide" },
   { key: "activity_delay", label: "3 · Activity delay detail", note: "One row per task · one well, bound parameter" },
+  { key: "crew_availability", label: "4 · Crew availability", note: "One row per crew · fleet-wide · feeds the suggestion agent" },
 ] as const;
 
 export function SqlViewer({ status }: { status: PipelineStatus | null }) {

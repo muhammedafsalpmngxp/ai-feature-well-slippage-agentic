@@ -180,6 +180,12 @@ def activity_summary() -> list[dict]:
     return _cached("activity_summary", lambda: as_records(run_sql(load_sql("activity_summary"))))
 
 
+def crew_availability() -> list[dict]:
+    """One row per crew, fleet-wide. Cached like the other fleet queries: it changes only when the
+    pipeline reruns, and the suggestion agent reads it on every click."""
+    return _cached("crew_availability", lambda: as_records(run_sql(load_sql("crew_availability"))))
+
+
 def activity_for_well(well_id: str) -> list[dict]:
     """The per-task detail for ONE well, via the bound parameter in the verified query.
 

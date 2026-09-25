@@ -72,6 +72,7 @@ const QUERIES = [
   { key: "well_slippage", label: "Well slippage" },
   { key: "activity_summary", label: "Delayed activity count" },
   { key: "activity_delay", label: "Activity delay detail" },
+  { key: "crew_availability", label: "Crew availability" },
 ] as const;
 
 /** `[well_slippage] DONE in 24.7s - 212 rows, verified=True`, and its REUSED twin. */
@@ -358,7 +359,7 @@ export function RunProgress({
                       </p>
                     )}
 
-                    {/* The three queries, as lanes under the stage that produces them. Shown
+                    {/* The queries, as lanes under the stage that produces them. Shown
                         from the moment that stage begins, so the reader sees what is being
                         worked on rather than only what has finished. */}
                     {stage.key === "author" && authorState !== "pending" && (

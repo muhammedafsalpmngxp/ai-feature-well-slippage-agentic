@@ -60,6 +60,7 @@ def render_plan(state: SlippageState) -> str:
             "task_table", "task_code", "task_well_key", "task_well_key_type", "well_key_type",
             "action_on", "tie_breaker",
             "target_start", "target_end", "actual_start", "actual_end", "progress",
+            "crew_id", "crew_type_id",
             "mapping_table", "mapping_activity_id", "mapping_activity_code", "mapping_crew_code",
             "description_table", "description_activity_code", "wbs_description",
         ):
@@ -122,13 +123,14 @@ def planner_node(state: SlippageState) -> dict:
     if plan.get("unresolved"):
         log.warning("plan: unresolved - %s", plan["unresolved"])
 
-    # The activity delay query cannot be written without the task table. Dropping it from the
-    # worklist is better than authoring against an unbound plan, which produces a query that
-    # runs and answers about nothing.
+    # The activity delay and crew availability queries cannot be written without the task table.
+    # Dropping them from the worklist is better than authoring against an unbound plan, which
+    # produces a query that runs and answers about nothing.
     pending = list(queries.DEFAULT_KEYS)
     if not task.get("task_table"):
-        pending = [k for k in pending if k != "activity_delay"]
-        log.warning("plan: no task table bound - skipping the activity delay query")
+        needs_task_table = ("activity_delay", "crew_availability")
+        pending = [k for k in pending if k not in needs_task_table]
+        log.warning("plan: no task table bound - skipping %s", ", ".join(needs_task_table))
 
     # --only narrows the worklist, but never widens it past what the plan can support.
     only = state.get("only")

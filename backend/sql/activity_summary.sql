@@ -4,117 +4,102 @@
 -- only when the database's structural fingerprint changes; a data load does not
 -- invalidate it. To force a rewrite: python main.py --regenerate
 --
--- Frozen at:  2026-09-18T11:40:09+00:00
--- Schema:     c744bd114e7d5585374563a34e105f61d024b7ca85ee781f4b8e7b8ccd4a605f
--- Rows then:  186
+-- Frozen at:  2026-09-25T05:44:59+00:00
+-- Schema:     5c24c5428a67dbce9e06d931f7ad130f8e8c32d5386ef380f15141eb16c6a458
+-- Rows then:  189
 -- Contract:   well_id, delayed_activity_codes
 --
 -- Editing this by hand is allowed, but it voids the verification: the hash in
 -- manifest.json stops matching and `python main.py --frozen` reports the file as
 -- hand-edited rather than as approved.
 -- ---- frozen SQL below ------------------------------------------------------
-WITH task_history_ranked AS
+WITH task_history AS
 (
     SELECT
-        t.well_id AS task_well_id,
-        LTRIM(RTRIM(t.task_code)) AS task_code,
-        t.target_start AS target_start,
-        t.target_end AS target_end,
-        t.actual_start AS actual_start,
-        t.actual_end AS actual_end,
+        td.id AS record_id,
+        td.ActionOn AS action_on,
+        LTRIM(RTRIM(td.task_code)) AS task_code,
+        td.well_id AS task_well_id,
+        td.target_end,
+        td.actual_end,
         ROW_NUMBER() OVER
         (
             PARTITION BY
-                LTRIM(RTRIM(t.well_id)),
-                LTRIM(RTRIM(t.task_code))
+                td.well_id,
+                LTRIM(RTRIM(td.task_code))
             ORDER BY
-                t.ActionOn DESC,
-                t.id DESC
-        ) AS history_rank
-    FROM well.task_daily AS t
+                td.ActionOn DESC,
+                td.id DESC
+        ) AS row_num
+    FROM well.task_daily AS td
 ),
-current_tasks AS
+task_latest AS
 (
     SELECT
-        r.task_well_id AS task_well_id,
-        r.task_code AS task_code,
-        r.target_start AS target_start,
-        r.target_end AS target_end,
-        r.actual_start AS actual_start,
-        r.actual_end AS actual_end,
-        LEFT
-        (
-            r.task_code,
-            NULLIF(CHARINDEX('-', r.task_code), 0) - 1
-        ) AS activity_id
-    FROM task_history_ranked AS r
-    WHERE r.history_rank = 1
+        th.task_well_id,
+        th.task_code,
+        th.target_end,
+        th.actual_end
+    FROM task_history AS th
+    WHERE th.row_num = 1
 ),
-task_schedule_risk AS
+mapping_unambiguous AS
 (
     SELECT
-        c.task_well_id AS task_well_id,
-        c.activity_id AS activity_id,
-        CASE
-            WHEN c.target_end IS NOT NULL
-                 AND
-                 (
-                     c.actual_end > c.target_end
-                     OR
-                     (
-                         c.actual_end IS NULL
-                         AND c.target_end < CAST(GETDATE() AS date)
-                     )
-                 )
-                THEN 'RED'
-            WHEN c.target_start IS NOT NULL
-                 AND c.actual_start IS NULL
-                 AND c.target_start < CAST(GETDATE() AS date)
-                THEN 'AMBER, START SLIPPING'
-            WHEN c.target_start IS NOT NULL
-                 AND c.actual_start IS NOT NULL
-                 AND c.actual_start > c.target_start
-                THEN 'AMBER, START DELAYED'
-            ELSE 'GREEN'
-        END AS schedule_risk
-    FROM current_tasks AS c
-),
-unique_activity_mappings AS
-(
-    SELECT
-        CAST(m.Activity_ID AS nvarchar(50)) AS activity_id,
-        MAX(m.New_Activity_Code) AS activity_code
-    FROM dbo.mapping_master AS m
+        CAST(mm.Activity_ID AS nvarchar(50)) AS activity_id,
+        MIN(mm.New_Activity_Code) AS activity_code
+    FROM dbo.mapping_master AS mm
     GROUP BY
-        CAST(m.Activity_ID AS nvarchar(50))
-    HAVING COUNT(DISTINCT m.New_Activity_Code) = 1
+        CAST(mm.Activity_ID AS nvarchar(50))
+    HAVING
+        COUNT(DISTINCT mm.New_Activity_Code) = 1
+        AND SUM(CASE WHEN mm.New_Activity_Code IS NULL THEN 1 ELSE 0 END) = 0
 ),
-delayed_activity_set AS
+task_activity AS
 (
-    SELECT DISTINCT
-        TRY_CONVERT(int, LTRIM(RTRIM(r.task_well_id))) AS well_id,
-        m.activity_code AS activity_code
-    FROM task_schedule_risk AS r
-    INNER JOIN unique_activity_mappings AS m
-        ON m.activity_id = r.activity_id
-    INNER JOIN well.well_master AS w
-        ON TRY_CONVERT(int, LTRIM(RTRIM(r.task_well_id))) =
-           TRY_CONVERT(int, w.well_id)
-       AND w.eng_completion_date IS NULL
-    WHERE r.schedule_risk IN
-    (
-        'RED',
-        'AMBER, START SLIPPING',
-        'AMBER, START DELAYED'
-    )
-      AND m.activity_code IS NOT NULL
+    SELECT
+        tl.task_well_id,
+        tl.target_end,
+        tl.actual_end,
+        mu.activity_code
+    FROM task_latest AS tl
+    INNER JOIN mapping_unambiguous AS mu
+        ON mu.activity_id =
+           LEFT
+           (
+               tl.task_code,
+               NULLIF(CHARINDEX('-', tl.task_code), 0) - 1
+           )
+    WHERE NULLIF(CHARINDEX('-', tl.task_code), 0) IS NOT NULL
+),
+delayed_activity_summary AS
+(
+    SELECT
+        wm.well_id,
+        COUNT(DISTINCT ta.activity_code) AS delayed_activity_codes
+    FROM well.well_master AS wm
+    INNER JOIN task_activity AS ta
+        ON CAST(ta.task_well_id AS int) = CAST(wm.well_id AS int)
+    WHERE wm.eng_completion_date IS NULL
+      AND ta.activity_code IS NOT NULL
+      AND ta.target_end IS NOT NULL
+      AND
+      (
+          ta.actual_end > ta.target_end
+          OR
+          (
+              ta.actual_end IS NULL
+              AND CAST(GETDATE() AS date) > ta.target_end
+          )
+      )
+    GROUP BY
+        wm.well_id
 )
 SELECT
-    d.well_id AS well_id,
-    COUNT(DISTINCT d.activity_code) AS delayed_activity_codes
-FROM delayed_activity_set AS d
-GROUP BY
-    d.well_id
+    das.well_id AS well_id,
+    das.delayed_activity_codes AS delayed_activity_codes
+FROM delayed_activity_summary AS das
+WHERE das.delayed_activity_codes > 0
 ORDER BY
-    COUNT(DISTINCT d.activity_code) DESC,
-    d.well_id ASC
+    das.delayed_activity_codes DESC,
+    das.well_id ASC

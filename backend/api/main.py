@@ -2,7 +2,12 @@
 
 Read-only by construction: every endpoint runs a SELECT that the agent pipeline already verified,
 and the safety gate is re-applied when each file is loaded. Nothing here can write to the
-database, and no endpoint calls an LLM.
+database.
+
+TWO endpoints call a model, both the suggestion agent (api/advisor.py): POST
+/api/wells/{id}/suggest-well (why is this well delayed) and POST /api/wells/{id}/suggest (one late
+task). It writes and runs no SQL of its own - it reasons over the same verified results every other
+endpoint serves, and returns its answer beside that evidence, labelled as a suggestion.
 """
 from __future__ import annotations
 
@@ -15,7 +20,7 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from api import service
+from api import advisor, service
 from app.observability import get_logger
 
 log = get_logger()
@@ -126,6 +131,73 @@ def well_activity(well_id: str):
         raise _query_failed(exc, "activity for well " + well_id) from exc
 
 
+@app.get("/api/crews")
+def crews():
+    """Every crew on the current task records: its type, its open work, and whether it is free."""
+    try:
+        return {"crews": service.crew_availability()}
+    except service.QueryUnavailable as exc:
+        raise _fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _query_failed(exc, "/api/crews") from exc
+
+
+@app.post("/api/wells/{well_id}/suggest-well")
+def suggest_well(
+    well_id: str,
+    fresh: bool = Query(False, description="ignore a cached answer and ask the agent again"),
+):
+    """Why is this well delayed, and how could the delay be overcome?
+
+    ⚠ Calls a model (see api/advisor.py). POST for the same reason as /suggest below.
+    """
+    well_id = (well_id or "").strip()
+    if not well_id or len(well_id) > 50:
+        raise HTTPException(status_code=400, detail="Invalid well id.")
+    try:
+        return advisor.suggest_well(well_id, fresh=fresh)
+    except (service.QueryUnavailable, advisor.AdvisorUnavailable) as exc:
+        raise _fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("api: well-level suggestion for well %s failed", well_id)
+        raise HTTPException(
+            status_code=502,
+            detail="The suggestion agent could not answer (" + type(exc).__name__ + "). "
+                   "Try again; the API log has the details.",
+        ) from exc
+
+
+@app.post("/api/wells/{well_id}/suggest")
+def suggest(
+    well_id: str,
+    task_code: str = Query(..., min_length=1, max_length=100, description="the late task to advise on"),
+    fresh: bool = Query(False, description="ignore a cached answer and ask the agent again"),
+):
+    """How could this late task be recovered, and is it late because of another delay?
+
+    ⚠ THE ONE ENDPOINT THAT CALLS A MODEL (see api/advisor.py). POST rather than GET because an
+    uncached call spends a high-effort model call, and a GET can be prefetched or replayed by
+    anything that follows links.
+    """
+    well_id = (well_id or "").strip()
+    if not well_id or len(well_id) > 50:
+        raise HTTPException(status_code=400, detail="Invalid well id.")
+    try:
+        return advisor.suggest(well_id, task_code.strip(), fresh=fresh)
+    except advisor.TaskNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (service.QueryUnavailable, advisor.AdvisorUnavailable) as exc:
+        raise _fail(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        # The class name only: a provider's error text can be long, and is for the log, not a page.
+        log.exception("api: suggestion for well %s task %s failed", well_id, task_code)
+        raise HTTPException(
+            status_code=502,
+            detail="The suggestion agent could not answer (" + type(exc).__name__ + "). "
+                   "Try again; the API log has the details.",
+        ) from exc
+
+
 @app.get("/api/brief")
 def brief():
     """The most recent generated brief, as markdown."""
@@ -203,6 +275,8 @@ def _run_pipeline(refresh: bool, regenerate: bool) -> None:
             running=False, finished_at=datetime.now(timezone.utc).isoformat(), exit_code=code
         )
         service.invalidate()
+        # A cached suggestion was reasoned over the previous run's figures.
+        advisor.invalidate()
 
 
 @app.post("/api/run")

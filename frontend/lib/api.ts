@@ -1,8 +1,11 @@
 import type {
   ActivitySummaryRow,
+  CrewRow,
   PipelineStatus,
+  Suggestion,
   TaskRow,
   WellRow,
+  WellSuggestion,
 } from "./types";
 
 /**
@@ -87,6 +90,25 @@ export const api = {
     ).then((r) => r.tasks),
   brief: () => get<{ markdown: string }>("/api/brief").then((r) => r.markdown),
   sql: (key: string) => get<{ key: string; sql: string }>(`/api/sql/${encodeURIComponent(key)}`),
+  crews: () => get<{ crews: CrewRow[] }>("/api/crews").then((r) => r.crews),
+  /**
+   * Ask the suggestion agent about one late task. The only call that spends a model call, so it
+   * is a POST, and it gets a long leash: a high-effort answer can take a minute or more. The Next
+   * proxy's own timeout is raised to match in next.config.ts - without that it cuts the request
+   * off at 30s whatever this says. `fresh` skips the API's cached answer.
+   */
+  /** Why is this WELL delayed, and how to overcome it. Same leash and reasons as `suggest`. */
+  suggestWell: (wellId: string, fresh = false) =>
+    get<WellSuggestion>(`/api/wells/${encodeURIComponent(wellId)}/suggest-well?fresh=${fresh}`, {
+      method: "POST",
+      timeoutMs: 250_000,
+    }),
+  suggest: (wellId: string, taskCode: string, fresh = false) =>
+    get<Suggestion>(
+      `/api/wells/${encodeURIComponent(wellId)}/suggest` +
+        `?task_code=${encodeURIComponent(taskCode)}&fresh=${fresh}`,
+      { method: "POST", timeoutMs: 250_000 },
+    ),
   /**
    * Start a pipeline run.
    *
